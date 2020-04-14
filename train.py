@@ -18,26 +18,49 @@ from models.basic import BasicModel
 from utils import collate_fn, draw_box, get_threat_score
 from datasets.original_dataset import UnlabeledDataset, LabeledDataset
 
-# TODO: add argparse stuff
+# TODO: add resume dir
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    '--data_root', type=str, default='../data', help='data dirctory')
+    '--data_root', type=str, default='../shared/dl/data', help='data dirctory')
 parser.add_argument(
     '--epochs', type=int, default=100, help='how many epochs')
 parser.add_argument(
+    '--optimizer', type=str, default='sgd', help='which optimizer to use')
+parser.add_argument(
+    '--lr', type=float, default=0.01, help='learning rate')
+parser.add_argument(
+    '--momentum', type=float, default=0.9, help='sgd momentum')
+parser.add_argument(
+    '--weight_decay', type=float, default=5e-4, help='weight decay')
+parser.add_argument(
     '--seed', type=int, default=0, help='random seed')
+parser.add_argument(
+    '--result_dir', type=str, default='./result', help='directory to store result and model')
+parser.add_argument(
+    '--batch_size', type=int, default=4, help='batch size')
+parser.add_argument(
+    '--num_workers', type=int, default=0, help='num_workers in dataloader')
+parser.add_argument(
+    '--model', type=str, default='basic', help='which model to use')
+parser.add_argument(
+    '--dataset', type=str, default='original', help='which dataloader to use')
 args = parser.parse_args()
 
+assert args.optimizer in ['sgd', 'adam']
+assert args.model in ['basic']
+assert args.dataset in ['original']
+
 # Set up random seed
-# TODO: set up gpu random seed
 random.seed(args.seed)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
+if torch.cuda.is_available():
+    torch.backends.cudnn.deterministic = True
+    # Setting bechmark to False might slow down the training speed
+    torch.backends.cudnn.benchmark = True # False
 
-annotation_csv = os.path.join(args.data_root, 'annotation.csv')
 unlabeled_scene_index = np.arange(106)
 labeled_scene_index = np.arange(106, 134)
-
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 def train(epoch):
@@ -55,7 +78,6 @@ def train(epoch):
         optimizer.step()
 
         # evaluate
-        # TODO: set up threat score
         # TODO: use average instead
         pred_road_imgs = torch.stack([resize_transform(
             (nn.Sigmoid()(pred_img) > 0.5).int()) for pred_img in output.cpu()])
@@ -96,29 +118,46 @@ if __name__ == '__main__':
     ])
 
     # TODO: make a new dataset class
-    labeled_set = LabeledDataset(
-        image_folder=args.data_root,
-        annotation_file=annotation_csv,
-        scene_index=labeled_scene_index,
-        transform=transform,
-        extra_info=True)
-    train_set = torch.utils.data.Subset(
-        labeled_trainset, np.random.choice(range(len(labeled_set)), 8))
-    train_dataloader = torch.utils.data.DataLoader(
-        train_set,
-        batch_size=4,
-        shuffle=True,
-        num_workers=0,
-        collate_fn=collate_fn)
+    print("Loading data")
+    if args.dataset == 'original':
+        labeled_set = LabeledDataset(
+            image_folder=args.data_root,
+            annotation_file=os.path.join(args.data_root, 'annotation.csv'),
+            scene_index=labeled_scene_index,
+            transform=transform,
+            extra_info=True)
+        train_set = torch.utils.data.Subset(
+            labeled_set, np.random.choice(range(len(labeled_set)), 8))
+        train_dataloader = torch.utils.data.DataLoader(
+            train_set,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn)
 
-    # Set up model, optimizer and loss function
-    model = BasicModel()
+    # Set up model and loss function
+    print("Creating model")
+    if args.model == 'basic':
+        model = BasicModel()
+        criterion = nn.BCEWithLogitsLoss()
     model = model.to(device)
-    # TODO: add optimizer args
-    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-    criterion = nn.BCEWithLogitsLoss()
+    
+    # Set up optimizer
+    if args.optimizer == 'sgd':
+        optimizer = optim.SGD(
+            model.parameters(),
+            lr=args.lr,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay)
+    elif args.optimizer == 'adam':
+        optimizer = optim.Adam(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay)
 
     for epoch in range(args.epochs):
         train(epoch)
         # validate(epoch)
-        # TODO: save model
+    
+    # TODO: more detailed saving (also save result)
+    # torch.save(model.state_dict(), args.result_dir)
