@@ -122,6 +122,7 @@ parser.add_argument(
     default=0.1,
     help='the default LR gamma')
 
+args = parser.parse_args()
 assert args.optimizer in ['sgd', 'adam']
 assert args.model in ['basic', 'faster_rcnn']
 assert args.dataset in ['basic', 'faster_rcnn']
@@ -177,7 +178,7 @@ def validate(epoch):
             results = model.get_loss(data, device)
             loss = results[0]
             mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
-            detection_ts, detection_ts_numeeator, detection_ts_denominator = results[4:]
+            detection_ts, detection_ts_numerator, detection_ts_denominator = results[4:]
 
             total_loss += loss.cpu().item()
             total_mask_ts_numerator += mask_ts_numerator
@@ -217,8 +218,6 @@ if __name__ == '__main__':
     # Set up model and loss function
     print("Creating model")
     model = get_model(args)
-    if torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
     model = model.to(device)
     
     if args.resume_dir and not args.debug:
@@ -252,7 +251,7 @@ if __name__ == '__main__':
     # Set up results directory
     if not args.debug:
         store_name = args.store_name if args.store_name else\
-            datetim.today().strftime('%Y-%m-%d-%H-%M-%S')
+            datetime.today().strftime('%Y-%m-%d-%H-%M-%S')
         store_dir = os.path.join(args.results_dir, store_name)
         os.makedirs(store_dir)
         
@@ -266,7 +265,7 @@ if __name__ == '__main__':
         'val_detection_ts': [],
     }
     if not args.debug:
-        store_file = f'{args.datset}_dataset_{args.model}_model'
+        store_file = f'{args.dataset}_dataset_{args.model}_model'
         store_file = os.path.join(store_dir, store_file)
         
     print("Dataset: {} | Model: {}\n".format(args.dataset, args.model))
