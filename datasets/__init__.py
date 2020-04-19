@@ -5,44 +5,81 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 
-from datasets.original_dataset import LabeledDataset
-from utils import collate_fn
+from datasets.basic_dataset import BasicLabelledDataset
+from datasets.faster_rcnn_dataset import FasterRCNNLabelledDataset
+from utils.data import collate_fn
+from utils.target_transforms import TargetResize
+
+MEAN = [0.5459, 0.5968, 0.6303] # [0.485, 0.456, 0.406]
+STD = [0.3178, 0.3246, 0.3278] # [0.229, 0.224, 0.225]
 
 unlabeled_scene_index = np.arange(106)
 labeled_scene_index = np.arange(106, 134)
 
 def get_loader(args):
-    if args.dataset == 'original':
-        transform = transforms.Compose([
+    if args.dataset == 'basic':
+        img_transform = transforms.Compose([
             # transforms.Resize(),
             transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            transforms.Normalize(MEAN, STD)
         ])
-        road_img_transform = transforms.Compose([
+        road_transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((512, 928)),
             transforms.ToTensor(),
         ])
-        resize_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((800, 800)),
-            transforms.ToTensor()
+        dataset = BasicLabelledDataset(
+            args.data_root,
+            img_transform=img_transform,
+            road_transform=road_transform)
+        
+        # Make it hard by hiding some full scenes
+        split_num = int(len(labeled_scene_index) * 0.8) * 126
+        train_indices = range(split_num)
+        val_indices = range(split_num, len(dataset))
+        train_set = torch.utils.data.Subset(dataset, train_indices)
+        val_set = torch.utils.data.Subset(dataset, val_indices)
+        
+        train_dataloader = torch.utils.data.DataLoader(
+            train_set,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers)
+        val_dataloader = torch.utils.data.DataLoader(
+            val_set,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers)
+    elif args.dataset == 'faster_rcnn':
+        img_transform = transforms.Compose([
+            # transforms.Resize(),
+            transforms.ToTensor(),
+            # transforms.Normalize(MEAN, STD)
         ])
-        labeled_set = LabeledDataset(
-            image_folder=args.data_root,
-            annotation_file=os.path.join(args.data_root, 'annotation.csv'),
-            scene_index=labeled_scene_index,
-            transform=transform,
-            extra_info=True)
-        train_set = torch.utils.data.Subset(
-            labeled_set, np.random.choice(range(len(labeled_set)), 8))
+        target_transform = TargetResize(800, (512, 920))
+        dataset = FasterRCNNLabelledDataset(
+            args.data_root,
+            img_transform=img_transform,
+            target_transform=target_transform)
+        
+        # Make it hard by hiding some full scenes
+        split_num = int(len(labeled_scene_index) * 0.8) * 126
+        train_indices = range(split_num)
+        val_indices = range(split_num, len(dataset))
+        train_set = torch.utils.data.Subset(dataset, train_indices)
+        val_set = torch.utils.data.Subset(dataset, val_indices)
+        
         train_dataloader = torch.utils.data.DataLoader(
             train_set,
             batch_size=args.batch_size,
             shuffle=True,
             num_workers=args.num_workers,
             collate_fn=collate_fn)
-    else:
-        raise 'No such dataloader'
+        val_dataloader = torch.utils.data.DataLoader(
+            val_set,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn)
         
-    return train_dataloader
+    return train_dataloader, val_dataloader

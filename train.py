@@ -15,7 +15,10 @@ import torchvision.transforms as transforms
 
 from models import get_model
 from datasets import get_loader
-from utils import collate_fn, draw_box, get_threat_score
+from utils.data import collate_fn
+from utils.target_transforms import TargetResize
+from utils.visualize import draw_box, visualize_target
+# from utils.evaluate import get_mask_threat_score, get_detection_threat_score
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -36,7 +39,7 @@ parser.add_argument(
 parser.add_argument(
     '--lr',
     type=float,
-    default=0.01,
+    default=0.001,
     help='learning rate')
 parser.add_argument(
     '--momentum',
@@ -61,7 +64,7 @@ parser.add_argument(
 parser.add_argument(
     '--batch_size',
     type=int,
-    default=4,
+    default=8,
     help='batch size')
 parser.add_argument(
     '--num_workers',
@@ -71,12 +74,12 @@ parser.add_argument(
 parser.add_argument(
     '--model',
     type=str,
-    default='basic',
+    default='faster_rcnn',
     help='which model to use')
 parser.add_argument(
     '--dataset',
     type=str,
-    default='original',
+    default='faster_rcnn',
     help='which dataloader to use')
 parser.add_argument(
     '--results_dir',
@@ -120,66 +123,79 @@ parser.add_argument(
     help='the default LR gamma')
 
 assert args.optimizer in ['sgd', 'adam']
-assert args.model in ['basic']
-assert args.dataset in ['original']
+assert args.model in ['basic', 'faster_rcnn']
+assert args.dataset in ['basic', 'faster_rcnn']
 
-# TODO: move this to a dataloader
-transform = transforms.Compose([
-    # transforms.Resize(),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-])
-road_img_transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((512, 928)),
-    transforms.ToTensor(),
-])
-resize_transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((800, 800)),
-    transforms.ToTensor()
-])
 
 def train(epoch):
-    total_train_loss = 0.
-    total_train_ts = 0.
+    model.train()
+    
+    total_loss = 0.
+    total_mask_ts_numerator = 0
+    total_mask_ts_denominator = 0
+    total_detection_ts_numerator = 0
+    total_detection_ts_denominator = 0
     for batch_idx, data in enumerate(train_dataloader):
-        imgs, _, road_imgs, _ = data
-        imgs = torch.stack(imgs).to(device)
-        road_imgs = torch.stack(road_imgs) # .to(device)
-        road_imgs_target = torch.stack([
-            road_img_transform(road_img.float()) for road_img in road_imgs]).to(device)
-
-        output = model(imgs)
-        loss = criterion(output, road_imgs_target)
+        results = model.get_loss(data, device)
+        loss = results[0]
+        mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
+        detection_ts, detection_ts_numerator, detection_ts_denominator = results[4:]
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         # evaluate
-        # TODO: use average instead
-        pred_road_imgs = torch.stack([resize_transform(
-            (nn.Sigmoid()(pred_img) > 0.5).int()) for pred_img in output.cpu()])
-        ts = get_threat_score(pred_road_imgs, road_imgs.float())
-        
-        total_train_loss += loss.detach().cpu().item()
-        total_train_ts += ts # TODO: this might be wrong
+        with torch.no_grad():
+            total_loss += loss.cpu().item()
+            total_mask_ts_numerator += mask_ts_numerator
+            total_mask_ts_denominator += mask_ts_denominator
+            total_detection_ts_numerator += detection_ts_numerator
+            total_detection_ts_denominator += detection_ts_denominator
 
         # Log
-        if (batch_idx + 1) % 1 == 0:
-            print('Train Epoch {} {}/{} | loss: {} | threat score: {:.3f}'.format(
-                epoch+1, batch_idx+1, len(train_dataloader),
-                loss.item(), ts), end='\r')
+        print(('Train Epoch {} {}/{} | loss: {:.3f} | '
+               'mask threat score: {:.3f} |'
+               'detection threat score: {:.3f}').format(
+            epoch+1, batch_idx+1, len(train_dataloader),
+            loss.item(), mask_ts, detection_ts), end='\r')
             
-    return total_train_loss, total_train_ts
+    total_loss /= len(train_dataloader.dataset)
+    total_mask_ts = total_mask_ts_numerator / total_mask_ts_denominator
+    total_detection_ts = total_detection_ts_numerator / total_detection_ts_denominator
+    return total_loss, total_mask_ts, total_detection_ts
 
 def validate(epoch):
-    for batch_idx, data in enumerate(val_dataloader):
-        output = model(imgs)
-        loss = criterion(output, road_imgs)
-        if batch_idx % 1:
-            print('Val Epoch {} {}/{} | loss: {}'.format(
-                epoch, batch_idx, 1, loss.item()))
+    with torch.no_grad():
+        model.eval()
+
+        total_loss = 0.
+        total_mask_ts_numerator = 0
+        total_mask_ts_denominator = 0
+        total_detection_ts_numerator = 0
+        total_detection_ts_denominator = 0
+        for batch_idx, data in enumerate(val_dataloader):
+            results = model.get_loss(data, device)
+            loss = results[0]
+            mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
+            detection_ts, detection_ts_numeeator, detection_ts_denominator = results[4:]
+
+            total_loss += loss.cpu().item()
+            total_mask_ts_numerator += mask_ts_numerator
+            total_mask_ts_denominator += mask_ts_denominator
+            total_detection_ts_numerator += detection_ts_numerator
+            total_detection_ts_denominator += detection_ts_denominator
+
+            # Log
+            print('Val Epoch {} {}/{} | loss: {:.3f} | '
+                  'mask thraet score: {:.3f} | '
+                  'detection threat score: {:.3f}'.format(
+                epoch+1, batch_idx+1, len(val_dataloader),
+                loss.item(), mask_ts, detection_ts), end='\r')
+
+        total_loss /= len(val_dataloader.dataset)
+        total_mask_ts = total_mask_ts_numerator / total_mask_ts_denominator
+        total_detection_ts = total_detection_ts_numerator / total_detection_ts_denominator
+    return total_loss, total_mask_ts, total_detection_ts
             
 if __name__ == '__main__':
     # Set up random seed
@@ -195,21 +211,19 @@ if __name__ == '__main__':
     start_epoch = 0
     
     # Set up data
-    # TODO: compute the actual mean and std
-
-    # TODO: make a new dataset class
     print("Loading data")
-    train_dataloader = get_loader(args)
+    train_dataloader, val_dataloader = get_loader(args)
 
     # Set up model and loss function
     print("Creating model")
-    model, criterion = get_model(args)
+    model = get_model(args)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
     model = model.to(device)
     
     if args.resume_dir and not args.debug:
         # Load checkpoint
         print('==> Resuming from checkpoint')
-        # TODO: change ckpt.pth
         checkpoint = torch.load(os.path.join(args.resume_dir, 'ckpt.pth'))
         model.load_state_dict(checkpoint['state_dict'])
         start_epoch = checkpoint['epoch']
@@ -244,14 +258,15 @@ if __name__ == '__main__':
         
     results = {
         'args': args,
-        'train_ts': [],
         'train_loss': [],
-        # 'val_ts': [],
-        # 'val_loss': []
+        'train_mask_ts': [],
+        'train_detection_ts': [],
+        'val_loss': [],
+        'val_mask_ts': [],
+        'val_detection_ts': [],
     }
     if not args.debug:
-        store_file = '{}_dataset_{}_model'.format(
-            args.dataset, args.model)
+        store_file = f'{args.datset}_dataset_{args.model}_model'
         store_file = os.path.join(store_dir, store_file)
         
     print("Dataset: {} | Model: {}\n".format(args.dataset, args.model))
@@ -262,31 +277,34 @@ if __name__ == '__main__':
     for epoch in range(start_epoch, start_epoch + args.epochs):
         print('Starting Epoch {}'.format(epoch))
         
-        train_loss, train_ts = train(epoch)
+        train_loss, train_mask_ts, train_detection_ts = train(epoch)
         results['train_loss'].append(train_loss)
-        results['train_ts'].append(train_ts)
-        print('Train loss: {} | Train ts: {}'.format(
-            train_loss, train_ts))
+        results['train_mask_ts'].append(train_mask_ts)
+        results['train_detection_ts'].append(train_detection_ts)
+        print(('\nTotal train loss: {:.3f} | train mask ts: {:.3f} | '
+               'train detection ts: {:.3f}').format(
+            train_loss, train_mask_ts, train_detection_ts))
         
         if scheduler:
             scheduler.step()
 
         val_loss = 0
-        # val_loss, val_ts = validate(epoch)
-        # results['val_loss'].append(val_loss)
-        # results['val_ts'].append(val_ts)
+        val_loss, val_mask_ts, val_detection_ts = validate(epoch)
+        results['val_loss'].append(val_loss)
+        results['val_mask_ts'].append(val_mask_ts)
+        results['val_detection_ts'].append(val_detection_ts)
+        print(('\nTotal val loss: {:.3f} | val mask ts: {:.3f} | '
+               'val detection ts: {:.3f}').format(
+            val_loss, val_mask_ts, val_detection_ts))
     
-        if not args.debug and epoch >= last_saved_epoch + 10 and\
-            last_val_loss > val_loss:
+        if not args.debug and last_val_loss > val_loss:
             state = {
                 'state_dict': model.state_dict(),
                 'epoch': epoch,
-                # 'step': step,
-                'loss': train_loss # val_loss
+                'loss': val_loss
             }
             print('\n***\nSaving epoch {}\n***\n'.format(epoch))
-            torch.save(
-                state, os.path.join(store_dir, 'epoch{}.pth'.format(epoch)))
+            torch.save(state, os.path.join(store_dir, f'epoch{epoch}.pth'))
             last_val_loss = val_loss
             last_saved_epoch = epoch
         
