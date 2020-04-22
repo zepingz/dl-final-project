@@ -4,6 +4,8 @@ from torchvision.models.detection import fasterrcnn_resnet50_fpn
 
 from utils.evaluate import get_mask_threat_score, get_detection_threat_score
 
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
 class FasterRCNNModel(nn.Module):
     def __init__(self):
         super(FasterRCNNModel, self).__init__()
@@ -18,7 +20,7 @@ class FasterRCNNModel(nn.Module):
         self.conv = nn.Conv2d(64, 1, 1, 1, 0)
         self.relu = nn.ReLU()
         
-    def get_loss(self, data, device, return_result=False):
+    def forward(self, data, return_result=False):
         imgs = list(img.to(device) for img in data[0])
         targets = [{k: v.to(device) for k, v in t.items() if k != 'masks'} for t in data[1]]
         target_masks = torch.stack([t['masks'].to(device) for t in data[1]])
@@ -28,8 +30,8 @@ class FasterRCNNModel(nn.Module):
         loss_dict = self.faster_rcnn(imgs, targets)
         losses = sum(loss for loss in loss_dict.values())
         
-        mask = self.img_to_mask(imgs)
-        mask_loss = self.mask_criterion(mask, target_masks)
+        masks = self.img_to_mask(imgs)
+        mask_loss = self.mask_criterion(masks, target_masks)
         losses = losses + mask_loss
         
         # Get detection
@@ -40,7 +42,7 @@ class FasterRCNNModel(nn.Module):
             # Get mask threat score
             road_imgs = torch.stack([t['masks'] for t in data[2]])
             mask_ts, mask_ts_numerator, mask_ts_denominator = get_mask_threat_score(
-                mask.cpu(), road_imgs)
+                masks.cpu(), road_imgs)
             
             # Get object detection threat score
             cpu_detections = [{k: v.cpu() for k, v in t.items()} for t in detections]

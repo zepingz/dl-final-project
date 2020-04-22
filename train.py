@@ -1,24 +1,17 @@
 import os
+import time
 import pickle
 import random
 import argparse
 import numpy as np
-import pandas as pd
 from datetime import datetime
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-import torchvision
-import torchvision.transforms as transforms
 
 from models import get_model
 from datasets import get_loader
-from utils.data import collate_fn
-from utils.target_transforms import TargetResize
-from utils.visualize import draw_box, visualize_target
-# from utils.evaluate import get_mask_threat_score, get_detection_threat_score
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -131,13 +124,15 @@ assert args.dataset in ['basic', 'faster_rcnn']
 def train(epoch):
     model.train()
     
+    t = time.time()
+    
     total_loss = 0.
     total_mask_ts_numerator = 0
     total_mask_ts_denominator = 0
     total_detection_ts_numerator = 0
     total_detection_ts_denominator = 0
     for batch_idx, data in enumerate(train_dataloader):
-        results = model.get_loss(data, device)
+        results = model(data)
         loss = results[0]
         mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
         detection_ts, detection_ts_numerator, detection_ts_denominator = results[4:]
@@ -154,11 +149,12 @@ def train(epoch):
             total_detection_ts_denominator += detection_ts_denominator
 
         # Log
-        print(('Train Epoch {} {}/{} | loss: {:.3f} | '
+        print(('Train Epoch {} {}/{} ({:.3f}s) | loss: {:.3f} | '
                'mask threat score: {:.3f} |'
                'detection threat score: {:.3f}').format(
-            epoch+1, batch_idx+1, len(train_dataloader),
-            loss.item(), mask_ts, detection_ts), end='\r')
+            epoch+1, batch_idx+1, len(train_dataloader), time.time() - t,
+            loss.item(), mask_ts, detection_ts), flush=True)
+        t = time.time()
             
     total_loss /= len(train_dataloader.dataset)
     total_mask_ts = total_mask_ts_numerator / total_mask_ts_denominator
@@ -168,6 +164,8 @@ def train(epoch):
 def validate(epoch):
     with torch.no_grad():
         model.eval()
+        
+        t = time.time()
 
         total_loss = 0.
         total_mask_ts_numerator = 0
@@ -175,7 +173,7 @@ def validate(epoch):
         total_detection_ts_numerator = 0
         total_detection_ts_denominator = 0
         for batch_idx, data in enumerate(val_dataloader):
-            results = model.get_loss(data, device)
+            results = model(data)
             loss = results[0]
             mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
             detection_ts, detection_ts_numerator, detection_ts_denominator = results[4:]
@@ -187,11 +185,12 @@ def validate(epoch):
             total_detection_ts_denominator += detection_ts_denominator
 
             # Log
-            print('Val Epoch {} {}/{} | loss: {:.3f} | '
+            print('Val Epoch {} {}/{} ({:.3f}) | loss: {:.3f} | '
                   'mask thraet score: {:.3f} | '
                   'detection threat score: {:.3f}'.format(
-                epoch+1, batch_idx+1, len(val_dataloader),
-                loss.item(), mask_ts, detection_ts), end='\r')
+                epoch+1, batch_idx+1, len(val_dataloader), time.time() - t,
+                loss.item(), mask_ts, detection_ts), flush=True)
+            t = time.time()
 
         total_loss /= len(val_dataloader.dataset)
         total_mask_ts = total_mask_ts_numerator / total_mask_ts_denominator
@@ -218,6 +217,9 @@ if __name__ == '__main__':
     # Set up model and loss function
     print("Creating model")
     model = get_model(args)
+    device_count = torch.cuda.device_count()
+    if device_count > 1:
+        model = nn.DataParallel(model)
     model = model.to(device)
     
     if args.resume_dir and not args.debug:
