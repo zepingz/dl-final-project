@@ -43,11 +43,11 @@ def box_iou(boxes1, boxes2):
     return iou
 
 def get_mask_threat_score(pred, target):
-    resize_transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((800, 800)),
-        transforms.ToTensor()
-    ])
+#     resize_transform = transforms.Compose([
+#         transforms.ToPILImage(),
+#         transforms.Resize((800, 800)),
+#         transforms.ToTensor()
+#     ])
     
     pred_road_imgs = torch.stack([
         (nn.Sigmoid()(pred_img) > 0.5).int() for pred_img in pred])
@@ -67,21 +67,23 @@ def get_mask_threat_score(pred, target):
     return ts, tp, ts_denominator
 
 def get_detection_threat_score(pred, target, threshold):
-    target_transform = TargetResize((512, 920), (800, 800))
+    # target_transform = TargetResize((512, 920), (800, 800))
     
     tp, fp, fn = 0, 0, 0
     for pred_datapoint, gt_datapoint in zip(pred, target):
-        pred_datapoint = target_transform(pred_datapoint)
+        # pred_datapoint = target_transform(pred_datapoint)
         if isinstance(pred_datapoint['boxes'], list) and len(pred_datapoint['boxes']) == 0:
             pred_match, gt_match = 0, 0
         else:
-            iou = box_iou(pred_datapoint['boxes'], gt_datapoint['boxes'])
+            pred_boxes = pred_datapoint['boxes']
+            gt_boxes = gt_datapoint['boxes'].cpu()
+            iou = box_iou(pred_boxes, gt_boxes)
             pred_match, gt_match = torch.where(iou > threshold)
             gt_match = len(torch.unique(gt_match))
             pred_match = len(torch.unique(pred_match))
         tp += gt_match
-        fp += len(pred_datapoint['boxes']) - pred_match
-        fn += len(gt_datapoint['boxes']) - gt_match
+        fp += len(pred_boxes) - pred_match
+        fn += len(gt_boxes) - gt_match
         
     ts_denominator = tp + fp + fn
     try:

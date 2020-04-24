@@ -5,8 +5,9 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 
-from datasets.basic_dataset import BasicLabelledDataset
-from datasets.faster_rcnn_dataset import FasterRCNNLabelledDataset
+from .basic_dataset import BasicLabelledDataset
+from .faster_rcnn_dataset import FasterRCNNLabelledDataset
+from .new_faster_rcnn_dataset import NewFasterRCNNLabelledDataset
 from utils.data import collate_fn
 from utils.target_transforms import TargetResize
 
@@ -66,6 +67,39 @@ def get_loader(args):
         split_num = int(len(labeled_scene_index) * 0.8) * 126
         train_indices = range(split_num)
         val_indices = range(split_num, len(dataset))
+        train_set = torch.utils.data.Subset(dataset, train_indices)
+        val_set = torch.utils.data.Subset(dataset, val_indices)
+        
+        train_dataloader = torch.utils.data.DataLoader(
+            train_set,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn)
+        val_dataloader = torch.utils.data.DataLoader(
+            val_set,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn)
+    elif args.dataset == 'new_faster_rcnn':
+        img_transform = transforms.Compose([
+            # transforms.Resize((800, 800)),
+            transforms.Resize((400, 400)),
+            transforms.ToTensor(),
+            transforms.Normalize(MEAN, STD)
+        ])
+        dataset = NewFasterRCNNLabelledDataset(args.data_root, img_transform)
+        
+        # Make it hard by hiding some full scenes
+        split_num = int(len(labeled_scene_index) * 0.8) * 126
+        train_indices = range(split_num)
+        val_indices = range(split_num, len(dataset))
+        
+        # DEBUG
+        # train_indices = np.random.choice(train_indices, 4, replace=False)
+        # val_indices = np.random.choice(val_indices, 1, replace=False)
+        
         train_set = torch.utils.data.Subset(dataset, train_indices)
         val_set = torch.utils.data.Subset(dataset, val_indices)
         
