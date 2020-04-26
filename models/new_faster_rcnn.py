@@ -17,59 +17,55 @@ from torchvision.models.detection.image_list import ImageList
 
 from utils.evaluate import get_mask_threat_score, get_detection_threat_score
 
+class MaskNetBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, use_bilinear=True):
+        super(MaskNetBlock, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.use_bilinear = use_bilinear
+
+        if self.use_bilinear:
+            self.up = nn.Upsample(
+                scale_factor=2, mode='bilinear', align_corners=True)
+            self.conv1 = nn.Conv2d(
+                self.in_channels, self.out_channels, 3, stride=1, padding=1)
+            self.conv1_norm = nn.BatchNorm2d(self.out_channels)
+        else:
+            self.up = nn.ConvTranspose2d(
+                self.in_channels, self.out_channels, 2, stride=2, padding=0)
+            self.conv1 = nn.Conv2d(
+                self.out_channels, self.out_channels, 3, stride=1, padding=1)
+            self.conv1_norm = nn.BatchNorm2d(self.out_channels)
+
+        self.conv2 = nn.Conv2d(
+            self.out_channels, self.out_channels, 3, stride=1, padding=1)
+        self.conv2_norm = nn.BatchNorm2d(self.out_channels)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x = self.up(x)
+        x = self.relu(self.conv1_norm(self.conv1(x)))
+        x = self.relu(self.conv2_norm(self.conv2(x)))
+        return x
+
 class MaskNet(nn.Module):
     def __init__(self, in_channels):
         super(MaskNet, self).__init__()
         self.in_channels = in_channels
-        
-        self.deconv1 = nn.ConvTranspose2d(
-            self.in_channels, 512, 2, stride=2, padding=0)
-        self.deconv1_norm = nn.BatchNorm2d(512)
-        # self.conv1_1 = nn.Conv2d(512, 512, 3, stride=1, padding=1)
-        self.conv1_1 = nn.Conv2d(self.in_channels, 512, 3, stride=1, padding=1)
-        self.conv1_1_norm = nn.BatchNorm2d(512)
-        self.conv1_2 = nn.Conv2d(512, 512, 3, stride=1, padding=1)
-        self.conv1_2_norm = nn.BatchNorm2d(512)
-        
-        self.deconv2 = nn.ConvTranspose2d(512, 256, 2, stride=2, padding=0)
-        self.deconv2_norm = nn.BatchNorm2d(256)
-        # self.conv2_1 = nn.Conv2d(256, 256, 3, stride=1, padding=1)
-        self.conv2_1 = nn.Conv2d(512, 256, 3, stride=1, padding=1)
-        self.conv2_1_norm = nn.BatchNorm2d(256)
-        self.conv2_2 = nn.Conv2d(256, 256, 3, stride=1, padding=1)
-        self.conv2_2_norm = nn.BatchNorm2d(256)
-        
-        self.deconv3 = nn.ConvTranspose2d(256, 128, 2, stride=2, padding=0)
-        self.deconv3_norm = nn.BatchNorm2d(128)
-        # self.conv3_1 = nn.Conv2d(128, 128, 3, stride=1, padding=1)
-        self.conv3_1 = nn.Conv2d(256, 128, 3, stride=1, padding=1)
-        self.conv3_1_norm = nn.BatchNorm2d(128)
-        self.conv3_2 = nn.Conv2d(128, 128, 3, stride=1, padding=1)
-        self.conv3_2_norm = nn.BatchNorm2d(128)
-        self.conv_last = nn.Conv2d(128, 1, 1, 1, 0)
+
+        self.block1 = MaskNetBlock(self.in_channels, 256, use_bilinear=True)
+        self.block2 = MaskNetBlock(256, 128, use_bilinear=True)
+        self.block3 = MaskNetBlock(128, 64, use_bilinear=True)
+        self.conv_last = nn.Conv2d(64, 1, 1, 1, 0)
         self.relu = nn.ReLU()
-        
-        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        
+
     def forward(self, x, target_masks=None):
-        device = x.device
-        
-        # x = self.relu(self.deconv1_norm(self.deconv1(x)))
-        x = self.up(x)
-        x = self.relu(self.conv1_1_norm(self.conv1_1(x)))
-        x = self.relu(self.conv1_2_norm(self.conv1_2(x)))
-        
-        # x = self.relu(self.deconv2_norm(self.deconv2(x)))
-        x = self.up(x)
-        x = self.relu(self.conv2_1_norm(self.conv2_1(x)))
-        x = self.relu(self.conv2_2_norm(self.conv2_2(x)))
-        
-        # x = self.relu(self.deconv3_norm(self.deconv3(x)))
-        x = self.up(x)
-        x = self.relu(self.conv3_1_norm(self.conv3_1(x)))
-        x = self.relu(self.conv3_2_norm(self.conv3_2(x)))
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
         x = self.conv_last(x)
-        
+
+        # device = x.device
         if target_masks is not None:
             losses = {
                 'loss_mask': nn.BCEWithLogitsLoss()(x, target_masks)
@@ -79,20 +75,22 @@ class MaskNet(nn.Module):
             return x
 
 class GeneralizedRCNN(nn.Module):
-    def __init__(self, backbone_list, rpn, roi_heads, mask_net, transform):
+    def __init__(self, backbone, rpn, roi_heads, mask_net, transform, input_img_num=6):
         super(GeneralizedRCNN, self).__init__()
         self.transform = transform
-        self.backbone_list = nn.ModuleList([b for b in backbone_list])
-        self.backbone_num = len(backbone_list)
+        # self.backbone_list = nn.ModuleList([b for b in backbone_list])
+        # self.backbone_num = len(backbone_list)
+        self.backbone = backbone
+        self.input_img_num = input_img_num
         self.rpn = rpn
         self.roi_heads = roi_heads
         self.mask_net = mask_net
-        self.backbone_out_channels = backbone_list[0].out_channels
+        self.backbone_out_channels = backbone.out_channels # backbone_list[0].out_channels
 
     def forward(self, images, targets=None, return_result=False):
-        assert images.size(1) == self.backbone_num
+        # assert images.size(1) == self.backbone_num
         bs = images.size(0)
-        
+
         # type: (List[Tensor], Optional[List[Dict[str, Tensor]]])
         if self.training and targets is None:
             raise ValueError("In training mode, targets should be passed")
@@ -105,22 +103,43 @@ class GeneralizedRCNN(nn.Module):
         # images, targets = self.transform(images, targets)
         # HACK
         device = images.device
-        images = ImageList(images, ((800, 800),) * images.size(0))
+        images = ImageList(images, ((400, 400),) * images.size(0))
         target_masks = torch.stack([t['masks'].to(device) for t in targets])
         targets = [{k: v.to(device) for k, v in t.items() if k != 'masks'} for t in targets]
-        
+
         # Pass images from 6 camera angle to different backbone
-        features_list = []
-        for i in range(self.backbone_num):
-            features_list.append(self.backbone_list[i](images.tensors[:, i])['0'])
-            
-        features_list = torch.stack(features_list, dim=1)
+        # features_list = []
+        # for i in range(self.input_img_num):
+        #     # features_list.append(self.backbone_list[i](images.tensors[:, i])['0'])
+        #     features_list.append(self.backbone(images.tensors[:, i])['0'])
+        # features_list = torch.stack(features_list, dim=1)
+        features_list = torch.stack(
+            [self.backbone(images.tensors[:, i])['0'] for i in range(self.input_img_num)], dim=1)
+
         feature_h, feature_w = features_list.size()[-2:]
-        features_list = features_list.view(
-            bs, self.backbone_out_channels * self.backbone_num, feature_h, feature_w)
-        
-        masks, mask_losses = self.mask_net(features_list, target_masks)
-        
+        combined_feature_map = features_list.view(
+            bs, self.backbone_out_channels * self.input_img_num, feature_h, feature_w)
+        # combined_feature_map = torch.zeros(
+        #     (bs, self.backbone_out_channels, feature_h*2, feature_w*2),
+        #     dtype=torch.float, device=features_list.device)
+        # # Front left view
+        # combined_feature_map[:, :, 90:190, :100] += features_list[:, 0]
+        # # Front view
+        # combined_feature_map[:, :, 100:, 50:150] += features_list[:, 1]
+        # # Front right view
+        # combined_feature_map[:, :, 90:190, 100:] += features_list[:, 2]
+        # # Back left view
+        # combined_feature_map[:, :, 10:110, :100] += features_list[:, 3]
+        # # Back view
+        # combined_feature_map[:, :, :100, 50:150] += features_list[:, 4]
+        # # Back right view
+        # combined_feature_map[:, :, 10:110, 100:] += features_list[:, 5]
+
+        masks, mask_losses = self.mask_net(combined_feature_map, target_masks)
+
+        del features_list
+        torch.cuda.empty_cache()
+
         # DEBUG
         losses = {
             'loss_rpn_box_reg': torch.tensor([0.]).cuda(),
@@ -128,15 +147,15 @@ class GeneralizedRCNN(nn.Module):
             'loss_box_reg': torch.tensor([0.]).cuda(),
             'loss_classifier': torch.tensor([0.]).cuda(),
         }
-        
+
         # TODO: Add something like unet
         # TODO: Add a branch to predict the angle
         # TODO: See if using a shared upsampling network is good or not
-        
+
 #         features = OrderedDict([('0', features_list)])
 # #         if isinstance(features, torch.Tensor):
 # #             features = OrderedDict([('0', features)])
-        
+
 #         proposals, proposal_losses = self.rpn(images, features, targets)
 #         detections, detector_losses = self.roi_heads(features, proposals, images.image_sizes, targets)
 #         detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
@@ -145,25 +164,25 @@ class GeneralizedRCNN(nn.Module):
 #         losses.update(detector_losses)
 #         losses.update(proposal_losses)
         losses.update(mask_losses)
-        
+
 #         mask_ts = 0.
 #         mask_ts_numerator = 0
 #         mask_ts_denominator = 1
         detection_ts = 0.
         detection_ts_numerator = 0
         detection_ts_denominator = 1
-        
+
         with torch.no_grad():
             # Get mask threat score
             mask_ts, mask_ts_numerator, mask_ts_denominator = get_mask_threat_score(
                 masks.cpu(), target_masks.cpu())
-            
+
 #             # Get object detection threat score
 #             cpu_detections = [{k: v.cpu() for k, v in t.items()} for t in detections]
 #             # TODO: add threshold more than 0.5
 #             detection_ts, detection_ts_numerator, detection_ts_denominator =\
 #                 get_detection_threat_score(cpu_detections, targets, 0.5)
-            
+
         if return_result:
             # DEBUG
             detections = 0
@@ -175,7 +194,7 @@ class GeneralizedRCNN(nn.Module):
                    detection_ts, detection_ts_numerator, detection_ts_denominator
 
 class ModifiedFasterRCNN(GeneralizedRCNN):
-    def __init__(self, backbone_list, num_classes=None,
+    def __init__(self, backbone, num_classes=None,
                  # transform parameters
                  min_size=800, max_size=1333,
                  image_mean=None, image_std=None,
@@ -211,7 +230,6 @@ class ModifiedFasterRCNN(GeneralizedRCNN):
                                  "is not specified")
 
         out_channels = 256 * 6 # backbone.out_channels
-        # out_channels = 256
 
         if rpn_anchor_generator is None:
             # anchor_sizes = ((32,), (64,), (128,), (256,), (512,))
@@ -261,7 +279,7 @@ class ModifiedFasterRCNN(GeneralizedRCNN):
             box_batch_size_per_image, box_positive_fraction,
             bbox_reg_weights,
             box_score_thresh, box_nms_thresh, box_detections_per_img)
-        
+
         mask_net = MaskNet(out_channels)
 
         if image_mean is None:
@@ -270,7 +288,7 @@ class ModifiedFasterRCNN(GeneralizedRCNN):
             image_std = [0.229, 0.224, 0.225]
         transform = GeneralizedRCNNTransform(min_size, max_size, image_mean, image_std)
 
-        super(ModifiedFasterRCNN, self).__init__(backbone_list, rpn, roi_heads, mask_net, transform)
+        super(ModifiedFasterRCNN, self).__init__(backbone, rpn, roi_heads, mask_net, transform)
 
 
 class TwoMLPHead(nn.Module):

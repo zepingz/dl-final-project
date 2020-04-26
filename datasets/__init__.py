@@ -33,14 +33,14 @@ def get_loader(args):
             args.data_root,
             img_transform=img_transform,
             road_transform=road_transform)
-        
+
         # Make it hard by hiding some full scenes
         split_num = int(len(labeled_scene_index) * 0.8) * 126
         train_indices = range(split_num)
         val_indices = range(split_num, len(dataset))
         train_set = torch.utils.data.Subset(dataset, train_indices)
         val_set = torch.utils.data.Subset(dataset, val_indices)
-        
+
         train_dataloader = torch.utils.data.DataLoader(
             train_set,
             batch_size=args.batch_size,
@@ -62,14 +62,14 @@ def get_loader(args):
             args.data_root,
             img_transform=img_transform,
             target_transform=target_transform)
-        
+
         # Make it hard by hiding some full scenes
         split_num = int(len(labeled_scene_index) * 0.8) * 126
         train_indices = range(split_num)
         val_indices = range(split_num, len(dataset))
         train_set = torch.utils.data.Subset(dataset, train_indices)
         val_set = torch.utils.data.Subset(dataset, val_indices)
-        
+
         train_dataloader = torch.utils.data.DataLoader(
             train_set,
             batch_size=args.batch_size,
@@ -90,19 +90,21 @@ def get_loader(args):
             transforms.Normalize(MEAN, STD)
         ])
         dataset = NewFasterRCNNLabelledDataset(args.data_root, img_transform)
-        
+
         # Make it hard by hiding some full scenes
         split_num = int(len(labeled_scene_index) * 0.8) * 126
         train_indices = range(split_num)
         val_indices = range(split_num, len(dataset))
-        
+
         # DEBUG
+        train_indices = list(train_indices) # [::4]
+        val_indices = list(val_indices) # [::4]
         # train_indices = np.random.choice(train_indices, 4, replace=False)
         # val_indices = np.random.choice(val_indices, 1, replace=False)
-        
+
         train_set = torch.utils.data.Subset(dataset, train_indices)
         val_set = torch.utils.data.Subset(dataset, val_indices)
-        
+
         train_dataloader = torch.utils.data.DataLoader(
             train_set,
             batch_size=args.batch_size,
@@ -115,5 +117,5 @@ def get_loader(args):
             shuffle=True,
             num_workers=args.num_workers,
             collate_fn=collate_fn)
-        
+
     return train_dataloader, val_dataloader

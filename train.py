@@ -97,7 +97,7 @@ parser.add_argument(
 parser.add_argument(
     '--criterion',
     type=str,
-    default='', 
+    default='',
     help='loss function')
 parser.add_argument(
     '--use_scheduler',
@@ -123,10 +123,10 @@ assert args.dataset in ['basic', 'faster_rcnn', 'new_faster_rcnn']
 def train(epoch):
     global all_train_masks
     model.train()
-    
+
     t = time.time()
     loader_len = len(train_dataloader)
-    
+
     total_loss = 0.
     total_rpn_box_reg_loss = 0.
     total_rpn_cls_loss = 0.
@@ -145,11 +145,11 @@ def train(epoch):
         losses = results[0]
         mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
         detection_ts, detection_ts_numerator, detection_ts_denominator = results[4:7]
-        
+
         loss = sum(l for l in losses.values())
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-        
+
         batch_count += len(imgs)
         if batch_count >= args.backprop_batch_size or batch_idx == loader_len - 1:
             optimizer.step()
@@ -168,7 +168,7 @@ def train(epoch):
             total_mask_ts_denominator += mask_ts_denominator
             total_detection_ts_numerator += detection_ts_numerator
             total_detection_ts_denominator += detection_ts_denominator
-            
+
             # DEBUG
             all_train_masks.append(results[8].cpu().detach())
 
@@ -188,7 +188,7 @@ def train(epoch):
             losses['loss_classifier'].item(), losses['loss_mask'].item(),
             mask_ts, detection_ts))
         t = time.time()
-            
+
     try:
         total_mask_ts = total_mask_ts_numerator / total_mask_ts_denominator
     except ZeroDivisionError:
@@ -198,7 +198,7 @@ def train(epoch):
         total_detection_ts = total_detection_ts_numerator / total_detection_ts_denominator
     except ZeroDivisionError:
         total_detection_ts = 0.
-    
+
     total_results = {
         'loss': total_loss / loader_len,
         'rpn_box_reg_loss': total_rpn_box_reg_loss / loader_len,
@@ -215,7 +215,7 @@ def validate(epoch):
     global all_val_masks
     with torch.no_grad():
         # model.eval()
-        
+
         t = time.time()
         loader_len = len(val_dataloader)
 
@@ -236,9 +236,9 @@ def validate(epoch):
             losses = results[0]
             mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
             detection_ts, detection_ts_numerator, detection_ts_denominator = results[4:7]
-            
+
             loss = sum(l for l in losses.values())
-            
+
             # DEBUG
             all_val_masks.append(results[8].cpu().detach())
 
@@ -279,7 +279,7 @@ def validate(epoch):
         total_detection_ts = total_detection_ts_numerator / total_detection_ts_denominator
     except ZeroDivisionError:
         total_detection_ts = 0.
-                
+
     total_results = {
         'loss': total_loss / loader_len,
         'rpn_box_reg_loss': total_rpn_box_reg_loss / loader_len,
@@ -291,12 +291,12 @@ def validate(epoch):
         'detection_ts': total_detection_ts
     }
     return total_results
-            
+
 if __name__ == '__main__':
     # DEBUG
     all_train_masks = []
     all_val_masks = []
-    
+
     # Set up random seed
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -305,10 +305,10 @@ if __name__ == '__main__':
         torch.backends.cudnn.deterministic = True
         # Setting bechmark to False might slow down the training speed
         torch.backends.cudnn.benchmark = True # False
-    
+
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     start_epoch = 0
-    
+
     # Set up data
     print("Loading data")
     train_dataloader, val_dataloader = get_loader(args)
@@ -320,14 +320,14 @@ if __name__ == '__main__':
     if device_count > 1:
         model = nn.DataParallel(model)
     model = model.to(device)
-    
+
     if args.resume_dir and not args.debug:
         # Load checkpoint
         print('==> Resuming from checkpoint')
         checkpoint = torch.load(os.path.join(args.resume_dir, 'ckpt.pth'))
         model.load_state_dict(checkpoint['state_dict'])
         start_epoch = checkpoint['epoch']
-    
+
     # Set up optimizer
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(
@@ -340,7 +340,7 @@ if __name__ == '__main__':
             model.parameters(),
             lr=args.lr,
             weight_decay=args.weight_decay)
-        
+
     # Set up scheduler
     if args.use_scheduler:
         milestones = [int(k) for k in args.schedule_milestones.split(',')]
@@ -348,14 +348,14 @@ if __name__ == '__main__':
             optimizer, milestones=milestones, gamma=args.schedule_gamma)
     else:
         scheduler = None
-        
+
     # Set up results directory
     if not args.debug:
         store_name = args.store_name if args.store_name else\
             datetime.today().strftime('%Y-%m-%d-%H-%M-%S')
         store_dir = os.path.join(args.results_dir, store_name)
         os.makedirs(store_dir)
-        
+
     results = {
         'args': args,
         'train_loss': [],
@@ -378,7 +378,7 @@ if __name__ == '__main__':
     if not args.debug:
         store_file = f'{args.dataset}_dataset_{args.model}_model'
         store_file = os.path.join(store_dir, store_file)
-        
+
     print("Dataset: {} | Model: {}\n".format(args.dataset, args.model))
 
     # Training and validation
@@ -386,7 +386,7 @@ if __name__ == '__main__':
     last_saved_epoch = 0
     for epoch in range(start_epoch, start_epoch + args.epochs):
         print('Starting Epoch {}\n'.format(epoch))
-        
+
         # Train
         # train_loss, train_mask_ts, train_detection_ts = train(epoch)
         train_results = train(epoch)
@@ -411,7 +411,7 @@ if __name__ == '__main__':
             train_results['roi_cls_loss'], train_results['mask_loss'],
             train_results['mask_ts'],
             train_results['detection_ts']))
-        
+
         if scheduler:
             scheduler.step()
 
@@ -435,11 +435,10 @@ if __name__ == '__main__':
                'val detection ts: {:.3f}\n').format(
             val_results['loss'], val_results['rpn_box_reg_loss'],
             val_results['rpn_cls_loss'], val_results['roi_box_reg_loss'],
-            val_results['roi_box_reg_loss'], val_results['roi_cls_loss'],
-            val_results['mask_loss'], val_results['mask_ts'],
-            val_results['detection_ts']))
-    
-        if not args.debug and last_val_loss > val_loss:
+            val_results['roi_cls_loss'], val_results['mask_loss'],
+            val_results['mask_ts'], val_results['detection_ts']))
+
+        if not args.debug: #  and last_val_loss > val_results['loss']:
             state = {
                 'state_dict': model.state_dict(),
                 'epoch': epoch,
@@ -449,7 +448,7 @@ if __name__ == '__main__':
             torch.save(state, os.path.join(store_dir, f'epoch{epoch}.pth'))
             last_val_loss = val_results['loss']
             last_saved_epoch = epoch
-        
+
     # Save results to a file
     if not args.debug:
         with open(store_file, 'wb') as f:
