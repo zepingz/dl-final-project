@@ -3,9 +3,10 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 
-from models.basic_model import BasicModel
-from models.faster_rcnn_model import FasterRCNNModel
-from models.new_faster_rcnn import ModifiedFasterRCNN
+from .basic_model import BasicModel
+from .faster_rcnn_model import FasterRCNNModel
+from .new_faster_rcnn import ModifiedFasterRCNN
+from .detection_faster_rcnn import DetectionFasterRCNN
 
 # from torchvision.ops import misc as misc_nn_ops
 # from torchvision.models import resnet
@@ -42,5 +43,7 @@ def get_model(args):
         #     backbone_list.append(resnet_fpn_backbone('resnet50', False))
         # model = ModifiedFasterRCNN(backbone_list, num_classes=9)
         model = ModifiedFasterRCNN(resnet_fpn_backbone('resnet18', False), num_classes=9)
+    elif args.model == 'detection_faster_rcnn':
+        model = DetectionFasterRCNN(resnet_fpn_backbone('resnet18', False), num_classes=9)
 
     return model

@@ -15,7 +15,7 @@ from torchvision.models.detection.transform import GeneralizedRCNNTransform
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 from torchvision.models.detection.image_list import ImageList
 
-from utils.evaluate import get_mask_threat_score, get_detection_threat_score
+from utils.evaluate import get_mask_threat_score, get_detection_threat_score, compute_ats_bounding_boxes
 
 class MaskNetBlock(nn.Module):
     def __init__(self, in_channels, out_channels, use_bilinear=True):
@@ -55,14 +55,14 @@ class MaskNet(nn.Module):
 
         self.block1 = MaskNetBlock(self.in_channels, 256, use_bilinear=True)
         self.block2 = MaskNetBlock(256, 128, use_bilinear=True)
-        self.block3 = MaskNetBlock(128, 64, use_bilinear=True)
-        self.conv_last = nn.Conv2d(64, 1, 1, 1, 0)
+        # self.block3 = MaskNetBlock(128, 64, use_bilinear=True)
+        self.conv_last = nn.Conv2d(128, 1, 1, 1, 0)
         self.relu = nn.ReLU()
 
     def forward(self, x, target_masks=None):
         x = self.block1(x)
         x = self.block2(x)
-        x = self.block3(x)
+        # x = self.block3(x)
         x = self.conv_last(x)
 
         # device = x.device
@@ -87,7 +87,7 @@ class GeneralizedRCNN(nn.Module):
         self.mask_net = mask_net
         self.backbone_out_channels = backbone.out_channels # backbone_list[0].out_channels
 
-    def forward(self, images, targets=None, return_result=False):
+    def forward(self, images, targets=None, return_result=False, return_losses=False):
         # assert images.size(1) == self.backbone_num
         bs = images.size(0)
 
@@ -104,7 +104,7 @@ class GeneralizedRCNN(nn.Module):
         # HACK
         device = images.device
         images = ImageList(images, ((400, 400),) * images.size(0))
-        target_masks = torch.stack([t['masks'].to(device) for t in targets])
+        target_masks = torch.stack([t['masks'].float().to(device) for t in targets])
         targets = [{k: v.to(device) for k, v in t.items() if k != 'masks'} for t in targets]
 
         # Pass images from 6 camera angle to different backbone
@@ -140,58 +140,67 @@ class GeneralizedRCNN(nn.Module):
         del features_list
         torch.cuda.empty_cache()
 
-        # DEBUG
-        losses = {
-            'loss_rpn_box_reg': torch.tensor([0.]).cuda(),
-            'loss_objectness': torch.tensor([0.]).cuda(),
-            'loss_box_reg': torch.tensor([0.]).cuda(),
-            'loss_classifier': torch.tensor([0.]).cuda(),
-        }
-
         # TODO: Add something like unet
         # TODO: Add a branch to predict the angle
         # TODO: See if using a shared upsampling network is good or not
 
-#         features = OrderedDict([('0', features_list)])
-# #         if isinstance(features, torch.Tensor):
-# #             features = OrderedDict([('0', features)])
+        features = OrderedDict([('0', combined_feature_map)])
+#         if isinstance(features, torch.Tensor):
+#             features = OrderedDict([('0', features)])
 
-#         proposals, proposal_losses = self.rpn(images, features, targets)
-#         detections, detector_losses = self.roi_heads(features, proposals, images.image_sizes, targets)
-#         detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
+        proposals, proposal_losses = self.rpn(images, features, targets)
+        try:
+            detections, detector_losses = self.roi_heads(features, proposals, images.image_sizes, targets)
+            detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
+        except RuntimeError:
+            detections = None
+            detector_losses = {
+                'loss_box_reg': torch.zeros(1),
+                'loss_classifier': torch.zeros(1)}
 
-#         losses = {}
-#         losses.update(detector_losses)
-#         losses.update(proposal_losses)
+        losses = {}
+        losses.update(detector_losses)
+        losses.update(proposal_losses)
         losses.update(mask_losses)
 
 #         mask_ts = 0.
 #         mask_ts_numerator = 0
 #         mask_ts_denominator = 1
-        detection_ts = 0.
-        detection_ts_numerator = 0
-        detection_ts_denominator = 1
-
-        with torch.no_grad():
-            # Get mask threat score
-            mask_ts, mask_ts_numerator, mask_ts_denominator = get_mask_threat_score(
-                masks.cpu(), target_masks.cpu())
-
-#             # Get object detection threat score
-#             cpu_detections = [{k: v.cpu() for k, v in t.items()} for t in detections]
-#             # TODO: add threshold more than 0.5
-#             detection_ts, detection_ts_numerator, detection_ts_denominator =\
-#                 get_detection_threat_score(cpu_detections, targets, 0.5)
+#         detection_ts = 0.
+#         detection_ts_numerator = 0
+#         detection_ts_denominator = 1
 
         if return_result:
-            # DEBUG
-            detections = 0
-            return losses, mask_ts, mask_ts_numerator,\
+            with torch.no_grad():
+                # Get mask threat score
+                mask_ts, mask_ts_numerator, mask_ts_denominator = get_mask_threat_score(
+                    masks.cpu(), target_masks.cpu())
+
+                # Get object detection threat score
+                detection_ts_numerator = 0
+                detection_ts_denominator = 0
+                if detections is not None:
+                    for i in range(len(detections)):
+                        if len(detections[i]['boxes']) == 0:
+                            continue
+                        _, d_ts_n, d_ts_d = compute_ats_bounding_boxes(
+                            detections[i]['boxes'].cpu().view(-1, 2, 2),
+                            targets[i]['boxes'].cpu().view(-1, 2, 2))
+                        detection_ts_numerator += d_ts_n
+                        detection_ts_denominator += d_ts_d
+                    try:
+                        detection_ts = detection_ts_numerator / detection_ts_denominator
+                    except ZeroDivisionError:
+                        detection_ts = 0.
+                else:
+                    detection_ts = 0.
+    #             detection_ts, detection_ts_numerator, detection_ts_denominator =\
+    #                 get_detection_threat_score(cpu_detections, targets, 0.5)
+            return mask_ts, mask_ts_numerator,\
                    mask_ts_denominator, detection_ts, detection_ts_numerator,\
                    detection_ts_denominator, detections, masks,
         else:
-            return losses, mask_ts, mask_ts_numerator, mask_ts_denominator,\
-                   detection_ts, detection_ts_numerator, detection_ts_denominator
+            return losses
 
 class ModifiedFasterRCNN(GeneralizedRCNN):
     def __init__(self, backbone, num_classes=None,
@@ -233,8 +242,8 @@ class ModifiedFasterRCNN(GeneralizedRCNN):
 
         if rpn_anchor_generator is None:
             # anchor_sizes = ((32,), (64,), (128,), (256,), (512,))
-            anchor_sizes = ((8,), (16,), (32,),)
-            aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
+            anchor_sizes = ((4,), (8,), (16,),)
+            aspect_ratios = ((0.5, 0.7, 1.0,),) * len(anchor_sizes)
             rpn_anchor_generator = AnchorGenerator(
                 anchor_sizes, aspect_ratios
             )

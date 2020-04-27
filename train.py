@@ -117,11 +117,13 @@ parser.add_argument(
 
 args = parser.parse_args()
 assert args.optimizer in ['sgd', 'adam']
-assert args.model in ['basic', 'faster_rcnn', 'new_faster_rcnn']
-assert args.dataset in ['basic', 'faster_rcnn', 'new_faster_rcnn']
+assert args.model in [
+    'basic', 'faster_rcnn', 'new_faster_rcnn',
+    'detection_faster_rcnn']
+assert args.dataset in [
+    'basic', 'faster_rcnn', 'new_faster_rcnn']
 
 def train(epoch):
-    global all_train_masks
     model.train()
 
     t = time.time()
@@ -141,10 +143,7 @@ def train(epoch):
     for batch_idx, data in enumerate(train_dataloader):
         imgs = torch.stack(data[0]).to(device)
         targets = data[1]
-        results = model(imgs, targets, return_result=True)
-        losses = results[0]
-        mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
-        detection_ts, detection_ts_numerator, detection_ts_denominator = results[4:7]
+        losses = model(imgs, targets)
 
         loss = sum(l for l in losses.values())
         loss.backward()
@@ -158,6 +157,11 @@ def train(epoch):
 
         # evaluate
         with torch.no_grad():
+            model.eval()
+            results = model(imgs, targets, return_result=True)
+            mask_ts, mask_ts_numerator, mask_ts_denominator = results[:3]
+            detection_ts, detection_ts_numerator, detection_ts_denominator = results[3:6]
+            
             total_loss += loss.cpu().item()
             total_rpn_box_reg_loss += losses['loss_rpn_box_reg'].item()
             total_rpn_cls_loss += losses['loss_objectness'].item()
@@ -168,9 +172,7 @@ def train(epoch):
             total_mask_ts_denominator += mask_ts_denominator
             total_detection_ts_numerator += detection_ts_numerator
             total_detection_ts_denominator += detection_ts_denominator
-
-            # DEBUG
-            all_train_masks.append(results[8].cpu().detach())
+        model.train()
 
         # Log
         print(('Train Epoch {} {}/{} ({:.3f}s) | '
@@ -212,7 +214,6 @@ def train(epoch):
     return total_results
 
 def validate(epoch):
-    global all_val_masks
     with torch.no_grad():
         # model.eval()
 
@@ -232,15 +233,13 @@ def validate(epoch):
         for batch_idx, data in enumerate(val_dataloader):
             imgs = torch.stack(data[0]).to(device)
             targets = data[1]
+            model.train()
+            losses = model(imgs, targets)
             results = model(imgs, targets, return_result=True)
-            losses = results[0]
-            mask_ts, mask_ts_numerator, mask_ts_denominator = results[1:4]
-            detection_ts, detection_ts_numerator, detection_ts_denominator = results[4:7]
+            mask_ts, mask_ts_numerator, mask_ts_denominator = results[:3]
+            detection_ts, detection_ts_numerator, detection_ts_denominator = results[3:6]
 
             loss = sum(l for l in losses.values())
-
-            # DEBUG
-            all_val_masks.append(results[8].cpu().detach())
 
             total_loss += loss.cpu().item()
             total_rpn_box_reg_loss += losses['loss_rpn_box_reg'].item()
@@ -266,7 +265,7 @@ def validate(epoch):
             epoch+1, batch_idx+1, len(val_dataloader), time.time() - t,
             loss.item(), losses['loss_rpn_box_reg'].item(),
             losses['loss_objectness'].item(), losses['loss_box_reg'].item(),
-            losses['loss_classifier'].item(), losses['loss_mask'],
+            losses['loss_classifier'].item(), losses['loss_mask'].item(),
             mask_ts, detection_ts))
             t = time.time()
 
@@ -293,9 +292,6 @@ def validate(epoch):
     return total_results
 
 if __name__ == '__main__':
-    # DEBUG
-    all_train_masks = []
-    all_val_masks = []
 
     # Set up random seed
     random.seed(args.seed)
@@ -385,7 +381,7 @@ if __name__ == '__main__':
     last_val_loss = 1e8
     last_saved_epoch = 0
     for epoch in range(start_epoch, start_epoch + args.epochs):
-        print('Starting Epoch {}\n'.format(epoch))
+        print('Starting Epoch {}\n'.format(epoch+1))
 
         # Train
         # train_loss, train_mask_ts, train_detection_ts = train(epoch)

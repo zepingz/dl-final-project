@@ -42,6 +42,12 @@ def box_iou(boxes1, boxes2):
     iou = inter / (area1[:, None] + area2 - inter)
     return iou
 
+def compute_iou(box1, box2):
+    a = Polygon(torch.t(box1)).convex_hull
+    b = Polygon(torch.t(box2)).convex_hull
+    
+    return a.intersection(b).area / a.union(b).area
+
 def get_mask_threat_score(pred, target):
 #     resize_transform = transforms.Compose([
 #         transforms.ToPILImage(),
@@ -52,9 +58,9 @@ def get_mask_threat_score(pred, target):
     pred_road_imgs = torch.stack([
         (nn.Sigmoid()(pred_img) > 0.5).int() for pred_img in pred])
     
-    if pred_road_imgs.shape[2] != 800 or pred_road_imgs.shape[3] != 800:
-        pred_road_imgs = torch.stack([resize_transform(img)\
-            for img in pred_road_imgs])
+#     if pred_road_imgs.shape[2] != 800 or pred_road_imgs.shape[3] != 800:
+#         pred_road_imgs = torch.stack([resize_transform(img)\
+#             for img in pred_road_imgs])
         
     tp = torch.sum((pred_road_imgs > 0.) * (target > 0.)).item()
     fp = torch.sum((pred_road_imgs > 0.) * (target < 1.)).item()
@@ -65,6 +71,48 @@ def get_mask_threat_score(pred, target):
     except ZeroDivisionError:
         ts = 0.
     return ts, tp, ts_denominator
+
+def compute_ats_bounding_boxes(boxes1, boxes2):
+    num_boxes1 = boxes1.size(0)
+    num_boxes2 = boxes2.size(0)
+
+    boxes1_max_x = boxes1[:, 0].max(dim=1)[0]
+    boxes1_min_x = boxes1[:, 0].min(dim=1)[0]
+    boxes1_max_y = boxes1[:, 1].max(dim=1)[0]
+    boxes1_min_y = boxes1[:, 1].min(dim=1)[0]
+
+    boxes2_max_x = boxes2[:, 0].max(dim=1)[0]
+    boxes2_min_x = boxes2[:, 0].min(dim=1)[0]
+    boxes2_max_y = boxes2[:, 1].max(dim=1)[0]
+    boxes2_min_y = boxes2[:, 1].min(dim=1)[0]
+
+    condition1_matrix = (boxes1_max_x.unsqueeze(1) > boxes2_min_x.unsqueeze(0))
+    condition2_matrix = (boxes1_min_x.unsqueeze(1) < boxes2_max_x.unsqueeze(0))
+    condition3_matrix = (boxes1_max_y.unsqueeze(1) > boxes2_min_y.unsqueeze(0))
+    condition4_matrix = (boxes1_min_y.unsqueeze(1) < boxes2_max_y.unsqueeze(0))
+    condition_matrix = condition1_matrix * condition2_matrix * condition3_matrix * condition4_matrix
+
+    iou_matrix = torch.zeros(num_boxes1, num_boxes2)
+    for i in range(num_boxes1):
+        for j in range(num_boxes2):
+            if condition_matrix[i][j]:
+                # iou_matrix[i][j] = compute_iou(boxes1[i], boxes2[j])
+                iou_matrix[i][j] = box_iou(boxes1[i].view(1, 4), boxes2[j].view(1, 4))
+
+    iou_max = iou_matrix.max(dim=0)[0]
+
+    iou_thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
+    total_threat_score = 0
+    total_weight = 0
+    for threshold in iou_thresholds:
+        tp = (iou_max > threshold).sum()
+        threat_score = tp * 1.0 / (num_boxes1 + num_boxes2 - tp)
+        total_threat_score += 1.0 / threshold * threat_score
+        total_weight += 1.0 / threshold
+
+    average_threat_score = total_threat_score / total_weight
+    
+    return average_threat_score, total_threat_score, total_weight
 
 def get_detection_threat_score(pred, target, threshold):
     # target_transform = TargetResize((512, 920), (800, 800))

@@ -97,10 +97,10 @@ def get_loader(args):
         val_indices = range(split_num, len(dataset))
 
         # DEBUG
-        train_indices = list(train_indices) # [::4]
-        val_indices = list(val_indices) # [::4]
-        # train_indices = np.random.choice(train_indices, 4, replace=False)
-        # val_indices = np.random.choice(val_indices, 1, replace=False)
+#         train_indices = list(train_indices)[::4]
+#         val_indices = list(val_indices)[::4]
+#         train_indices = np.random.choice(train_indices, 4, replace=False)
+#         val_indices = np.random.choice(val_indices, 4, replace=False)
 
         train_set = torch.utils.data.Subset(dataset, train_indices)
         val_set = torch.utils.data.Subset(dataset, val_indices)

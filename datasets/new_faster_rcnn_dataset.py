@@ -4,6 +4,7 @@ from PIL import Image
 
 import torch
 import torchvision.transforms as transforms
+from torchvision.models.detection.transform import GeneralizedRCNNTransform
 
 from utils.data import convert_map_to_road_map, convert_map_to_lane_map
 
@@ -28,6 +29,9 @@ class NewFasterRCNNLabelledDataset(torch.utils.data.Dataset):
         self.extra_info = extra_info
         self.anno = pd.read_csv(
             os.path.join(self.root, 'annotation.csv'))
+        
+        self.target_transform = GeneralizedRCNNTransform(
+            400, 400, [0., 0., 0.], [1., 1., 1.])
 
     def __getitem__(self, index):
         scene_id = scene_indices[index // len(sample_indices)]
@@ -65,6 +69,11 @@ class NewFasterRCNNLabelledDataset(torch.utils.data.Dataset):
         target['boxes'] = corners
         target['labels'] = torch.as_tensor(categories)
         target["masks"] = road_img
+        
+        # TODO: check if this is correct
+        temp_tensor = torch.zeros(1, 3, 800, 800)
+        _, target = self.target_transform(temp_tensor, [target])
+        target = target[0]
         
         # Load extra info
         if self.extra_info:
