@@ -32,7 +32,7 @@ args = parser.parse_args()
 
 if __name__ == '__main__':
     for scene_id in range(0, 134):
-        for sample_id in range(0, 125):
+        for sample_id in range(0, 126):
             print('scene_{} sample_{}'.format(scene_id, sample_id))
             bev = BEV(args.data_root, scene_id, sample_id, ipm_params)
             path = os.path.join(
