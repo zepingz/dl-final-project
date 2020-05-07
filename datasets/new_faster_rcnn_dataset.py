@@ -53,9 +53,9 @@ class NewFasterRCNNLabelledDataset(torch.utils.data.Dataset):
             data_entries[corner_names].to_numpy(), dtype=torch.float).view(-1, 2, 4)
         corners[:, 0, :] = corners[:, 0, :] * 10 + 400
         corners[:, 1, :] = -corners[:, 1, :] * 10 + 400
-        min_coordinates, _ = torch.min(corners, 2)
-        max_coordinates, _ = torch.max(corners, 2)
-        corners = torch.cat([min_coordinates, max_coordinates], 1)
+#         min_coordinates, _ = torch.min(corners, 2)
+#         max_coordinates, _ = torch.max(corners, 2)
+#         corners = torch.cat([min_coordinates, max_coordinates], 1)
         categories = data_entries.category_id.to_numpy()
             
         # Load road images
@@ -71,9 +71,9 @@ class NewFasterRCNNLabelledDataset(torch.utils.data.Dataset):
         target["masks"] = road_img
         
         # TODO: check if this is correct
-        temp_tensor = torch.zeros(1, 3, 800, 800)
-        _, target = self.target_transform(temp_tensor, [target])
-        target = target[0]
+#         temp_tensor = torch.zeros(1, 3, 800, 800)
+#         _, target = self.target_transform(temp_tensor, [target])
+#         target = target[0]
         
         # Load extra info
         if self.extra_info:

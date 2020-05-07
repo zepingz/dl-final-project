@@ -85,9 +85,9 @@ def get_loader(args):
     elif args.dataset == 'new_faster_rcnn':
         img_transform = transforms.Compose([
             # transforms.Resize((800, 800)),
-            transforms.Resize((400, 400)),
+            # transforms.Resize((400, 400)),
             transforms.ToTensor(),
-            transforms.Normalize(MEAN, STD)
+            # transforms.Normalize(MEAN, STD)
         ])
         dataset = NewFasterRCNNLabelledDataset(args.data_root, img_transform)
 
@@ -97,10 +97,11 @@ def get_loader(args):
         val_indices = range(split_num, len(dataset))
 
         # DEBUG
-#         train_indices = list(train_indices)[::4]
-#         val_indices = list(val_indices)[::4]
-#         train_indices = np.random.choice(train_indices, 4, replace=False)
-#         val_indices = np.random.choice(val_indices, 4, replace=False)
+        # train_indices = list(train_indices)[::4]
+        # val_indices = list(val_indices)[::4]
+        train_indices = np.random.choice(train_indices, 4, replace=False)
+        # train_indices = list(train_indices)[3*126+16:3*126+17]
+        val_indices = np.random.choice(val_indices, 1, replace=False)
 
         train_set = torch.utils.data.Subset(dataset, train_indices)
         val_set = torch.utils.data.Subset(dataset, val_indices)

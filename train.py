@@ -52,7 +52,7 @@ parser.add_argument(
 parser.add_argument(
     '--batch_size',
     type=int,
-    default=2,
+    default=1,
     help='batch size of dataloader')
 parser.add_argument(
     '--backprop_batch_size',
