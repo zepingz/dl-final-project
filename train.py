@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     '--data_root',
     type=str,
-    default='../shared/dl/data',
+    default='../data',
     help='data dirctory')
 parser.add_argument(
     '--epochs',
@@ -55,7 +55,7 @@ parser.add_argument(
     default=1,
     help='batch size of dataloader')
 parser.add_argument(
-    '--backprop_batch_size',
+    '--optim_batch_size',
     type=int,
     default=16,
     help='real batch size')
@@ -141,6 +141,14 @@ def train(epoch):
     total_detection_ts_denominator = 0
     batch_count = 0
     for batch_idx, data in enumerate(train_dataloader):
+        dis = torch.mean(data[1][0]['boxes'], dim=2) - torch.tensor([400., 400.])
+        index_1 = torch.sqrt(torch.sum(torch.pow(dis, 2), dim=1)) < 300.
+        index_2 = (data[1][0]['labels'] == 0) | (data[1][0]['labels'] == 2) |\
+            (data[1][0]['labels'] == 4) | (data[1][0]['labels'] == 5)
+        label_index = index_1 * index_2
+        if torch.sum(label_index) == 0:
+            continue
+
         imgs = torch.stack(data[0]).to(device)
         targets = data[1]
         losses = model(imgs, targets)
@@ -150,7 +158,7 @@ def train(epoch):
         nn.utils.clip_grad_norm_(model.parameters(), 5.0)
 
         batch_count += len(imgs)
-        if batch_count >= args.backprop_batch_size or batch_idx == loader_len - 1:
+        if batch_count >= args.optim_batch_size or batch_idx == loader_len - 1:
             optimizer.step()
             optimizer.zero_grad()
             batch_count = 0
@@ -161,7 +169,7 @@ def train(epoch):
             results = model(imgs, targets, return_result=True)
             mask_ts, mask_ts_numerator, mask_ts_denominator = results[:3]
             detection_ts, detection_ts_numerator, detection_ts_denominator = results[3:6]
-            
+
             total_loss += loss.cpu().item()
             total_rpn_box_reg_loss += losses['loss_rpn_box_reg'].item()
             total_rpn_cls_loss += losses['loss_objectness'].item()
@@ -231,6 +239,14 @@ def validate(epoch):
         total_detection_ts_numerator = 0
         total_detection_ts_denominator = 0
         for batch_idx, data in enumerate(val_dataloader):
+            dis = torch.mean(data[1][0]['boxes'], dim=2) - torch.tensor([400., 400.])
+            index_1 = torch.sqrt(torch.sum(torch.pow(dis, 2), dim=1)) < 300.
+            index_2 = (data[1][0]['labels'] == 0) | (data[1][0]['labels'] == 2) |\
+                (data[1][0]['labels'] == 4) | (data[1][0]['labels'] == 5)
+            label_index = index_1 * index_2
+            if torch.sum(label_index) == 0:
+                continue
+
             imgs = torch.stack(data[0]).to(device)
             targets = data[1]
             model.train()
@@ -434,11 +450,11 @@ if __name__ == '__main__':
             val_results['roi_cls_loss'], val_results['mask_loss'],
             val_results['mask_ts'], val_results['detection_ts']))
 
-        if not args.debug: #  and last_val_loss > val_results['loss']:
+        if not args.debug: # and last_val_loss > val_results['loss']:
             state = {
                 'state_dict': model.state_dict(),
                 'epoch': epoch,
-                'loss': val_results['loss']
+                # 'loss': val_results['loss']
             }
             print('\n***\nSaving epoch {}\n***\n'.format(epoch+1))
             torch.save(state, os.path.join(store_dir, f'epoch{epoch}.pth'))

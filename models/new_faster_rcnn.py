@@ -1,3 +1,4 @@
+import copy
 from collections import OrderedDict
 
 import torch
@@ -19,6 +20,7 @@ from torchvision.models.detection.image_list import ImageList
 
 from utils.evaluate import get_mask_threat_score, get_detection_threat_score, compute_ats_bounding_boxes
 from .unet import UNet
+from LKVOLearner.networks import VggDepthEstimator
 
 MEAN = [0.5459, 0.5968, 0.6303] # [0.485, 0.456, 0.406]
 STD = [0.3178, 0.3246, 0.3278] # [0.229, 0.224, 0.225]
@@ -79,19 +81,19 @@ class MaskNet(nn.Module):
             return x, losses
         else:
             return x
-        
+
 class UnetMask(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(UnetMask, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        
+
         self.conv = nn.Conv2d(self.in_channels, self.out_channels, 1, 1, 0)
         # self.relu = nn.ReLU()
-        
+
     def forward(self, x, target_masks=None):
         x = self.conv(x)
-        
+
         if target_masks is not None:
             losses = {
                 'loss_mask': nn.BCEWithLogitsLoss()(x, target_masks)
@@ -99,23 +101,28 @@ class UnetMask(nn.Module):
             return x, losses
         else:
             return x
-                
+
 
 class GeneralizedRCNN(nn.Module):
-    def __init__(self, backbone, rpn, roi_heads, mask_net, transform, input_img_num=6):
+    def __init__(self, backbone, rpn, roi_heads, mask_net, transform, input_img_num=6, depth_estimator_model_path='_depth_net.pth'):
         super(GeneralizedRCNN, self).__init__()
         self.transform = transform
         # self.backbone_list = nn.ModuleList([b for b in backbone_list])
         # self.backbone_num = len(backbone_list)
-        self.backbone = UNet(3, 1) # backbone
-        self.backbone_ = UNet(3, 64)
+        self.backbone = UNet(4, 1) # backbone
+        self.backbone_ = UNet(4, 64)
         # self.backbone_ = resnet_fpn_backbone('resnet18', False)
         self.input_img_num = input_img_num
         self.rpn = rpn
         self.roi_heads = roi_heads
         self.mask_net = UnetMask(6, 1) # mask_net
         self.backbone_out_channels = 64 # backbone.out_channels # backbone_list[0].out_channels
-        
+
+        self.depth_estimator_model_path = depth_estimator_model_path
+        self.depth_estimator = VggDepthEstimator()
+        self.depth_estimator.load_state_dict(torch.load(self.depth_estimator_model_path))
+        self.depth_resize = nn.Upsample(size=(400, 400), mode='bilinear', align_corners=True)
+
         self.img_transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((400, 400)),
@@ -125,27 +132,56 @@ class GeneralizedRCNN(nn.Module):
         self.target_transform = GeneralizedRCNNTransform(
             400, 400, [0., 0., 0.], [1., 1., 1.])
 
-    def forward(self, _images, targets=None, return_result=False, return_losses=False):
+        self.mask_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((800, 800)),
+            transforms.ToTensor()
+        ])
+
+        self.depth_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((128, 416)),
+            transforms.ToTensor(),
+            transforms.Normalize(MEAN, STD)
+        ])
+
+    def forward(self, _images, _targets=None, return_result=False, return_losses=False):
         # assert images.size(1) == self.backbone_num
         bs = _images.size(0)
         assert bs == 1
-        
+
         device = _images.device
-        
+
         # Process images
         images = torch.zeros(1, 6, 3, 400, 400)
+        depths = torch.zeros(1, 6, 3, 128, 416)
         for i in range(6):
             images[0, i] = self.img_transform(_images[0, i].cpu())
+            depths[0, i] = self.depth_transform(_images[0, i].cpu())
         del _images
         images = images.to(device)
-        
+        depths = depths.to(device)
+
+        # Get depth map
+        depths = self.depth_estimator(depths.squeeze(0))[0]
+        depths = self.depth_resize(depths.unsqueeze(1))
+        depths = depths.view(1, 6, 1, 400, 400)
+        images = torch.cat((images, depths), dim=2)
+        del depths
+
         # Process targets
-        label_index = targets[0]['labels'] == 2
+        dis = torch.mean(_targets[0]['boxes'], dim=2) - torch.tensor([400., 400.])
+        index_1 = torch.sqrt(torch.sum(torch.pow(dis, 2), dim=1)) < 300.
+        index_2 = (_targets[0]['labels'] == 0) | (_targets[0]['labels'] == 2) |\
+            (_targets[0]['labels'] == 4) | (_targets[0]['labels'] == 5)
+        label_index = index_1 * index_2
+
+        targets = [copy.deepcopy(_targets[0])]
         targets[0]['boxes'] = targets[0]['boxes'][label_index]
         targets[0]['labels'] = targets[0]['labels'][label_index]
-        
+
         targets = [{k: v for k, v in t.items()} for t in targets]
-        targets[0]['old_boxes'] = targets[0]['boxes'] / 2.
+        # targets[0]['old_boxes'] = targets[0]['boxes'] / 2.
         min_coordinates, _ = torch.min(targets[0]['boxes'], 2)
         max_coordinates, _ = torch.max(targets[0]['boxes'], 2)
         targets[0]['boxes'] = torch.cat([min_coordinates, max_coordinates], 1)
@@ -179,11 +215,11 @@ class GeneralizedRCNN(nn.Module):
 
         del features_list # , combined_feature_map
         torch.cuda.empty_cache()
-        
+
         # Detction backbone
         features_list = torch.stack(
             [self.backbone_(images.tensors[:, i]) for i in range(self.input_img_num)], dim=1)
-        
+
         feature_h, feature_w = features_list.size()[-2:]
         detection_combined_feature_map = features_list.view(
             bs, 64 * self.input_img_num, 400, 400)
@@ -195,17 +231,17 @@ class GeneralizedRCNN(nn.Module):
 
         proposals, proposal_losses = self.rpn(images, road_map_features, targets)
         # proposals, proposal_losses = self.rpn(images, detection_features, targets)
-        try:
-            detections, detector_losses = self.roi_heads(detection_features, proposals, images.image_sizes, targets)
-            detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
-        except RuntimeError as e:
-            print(e)
-            detections = None
-            detector_losses = {
-                'loss_box_reg': torch.zeros(1),
-                'loss_classifier': torch.zeros(1)}
-        # detections, detector_losses = self.roi_heads(features, proposals, images.image_sizes, targets)
-        # detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
+        # try:
+        #     detections, detector_losses = self.roi_heads(detection_features, proposals, images.image_sizes, targets)
+        #     detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
+        # except RuntimeError as e:
+        #     print(e)
+        #     detections = None
+        #     detector_losses = {
+        #         'loss_box_reg': torch.zeros(1),
+        #         'loss_classifier': torch.zeros(1)}
+        detections, detector_losses = self.roi_heads(detection_features, proposals, images.image_sizes, targets)
+        detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
 
         losses = {}
         losses.update(detector_losses)
@@ -222,8 +258,10 @@ class GeneralizedRCNN(nn.Module):
         if return_result:
             with torch.no_grad():
                 # Get mask threat score
+                _masks = self.mask_transform(masks.cpu().squeeze(0)).unsqueeze(0)
                 mask_ts, mask_ts_numerator, mask_ts_denominator = get_mask_threat_score(
-                    masks.cpu(), target_masks.cpu())
+                    # masks.cpu(), target_masks.cpu())
+                    _masks, _targets[0]['masks'].float())
 
                 # Get object detection threat score
                 detection_ts_numerator = 0
@@ -232,9 +270,14 @@ class GeneralizedRCNN(nn.Module):
                     for i in range(len(detections)):
                         if len(detections[i]['boxes']) == 0:
                             continue
+                        min_coordinates, _ = torch.min(_targets[0]['boxes'], 2)
+                        max_coordinates, _ = torch.max(_targets[0]['boxes'], 2)
+                        _targets[0]['boxes'] = torch.cat([min_coordinates, max_coordinates], 1)
+                        _detection = detections[i]['boxes'].cpu().view(-1, 2, 2) * 2
                         _, d_ts_n, d_ts_d = compute_ats_bounding_boxes(
-                            detections[i]['boxes'].cpu().view(-1, 2, 2),
-                            targets[i]['boxes'].cpu().view(-1, 2, 2))
+                            # detections[i]['boxes'].cpu().view(-1, 2, 2),
+                            _detection,
+                            _targets[i]['boxes'].cpu().view(-1, 2, 2))
                         detection_ts_numerator += d_ts_n
                         detection_ts_denominator += d_ts_d
                     try:

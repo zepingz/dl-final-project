@@ -92,16 +92,17 @@ def get_loader(args):
         dataset = NewFasterRCNNLabelledDataset(args.data_root, img_transform)
 
         # Make it hard by hiding some full scenes
-        split_num = int(len(labeled_scene_index) * 0.8) * 126
+        # split_num = int(len(labeled_scene_index) * 0.8) * 126
+        split_num = int(len(labeled_scene_index) * 0.9) * 126
         train_indices = range(split_num)
         val_indices = range(split_num, len(dataset))
 
         # DEBUG
         # train_indices = list(train_indices)[::4]
         # val_indices = list(val_indices)[::4]
-        train_indices = np.random.choice(train_indices, 4, replace=False)
+        # train_indices = np.random.choice(train_indices, 4, replace=False)
         # train_indices = list(train_indices)[3*126+16:3*126+17]
-        val_indices = np.random.choice(val_indices, 1, replace=False)
+        # val_indices = np.random.choice(val_indices, 1, replace=False)
 
         train_set = torch.utils.data.Subset(dataset, train_indices)
         val_set = torch.utils.data.Subset(dataset, val_indices)
