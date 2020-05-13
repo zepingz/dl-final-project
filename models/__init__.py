@@ -42,8 +42,8 @@ def get_model(args):
         # for i in range(6):
         #     backbone_list.append(resnet_fpn_backbone('resnet50', False))
         # model = ModifiedFasterRCNN(backbone_list, num_classes=9)
-        model = ModifiedFasterRCNN(resnet_fpn_backbone('resnet18', False), num_classes=9)
+        model = ModifiedFasterRCNN(None, num_classes=9, depth_estimator_path=args.depth_net_path)
     elif args.model == 'detection_faster_rcnn':
-        model = DetectionFasterRCNN(resnet_fpn_backbone('resnet18', False), num_classes=9)
+        model = DetectionFasterRCNN(None, num_classes=9)
 
     return model

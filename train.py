@@ -1,5 +1,6 @@
 import os
 import time
+import copy
 import pickle
 import random
 import argparse
@@ -12,6 +13,50 @@ import torch.optim as optim
 
 from models import get_model
 from datasets import get_loader
+
+from helper import compute_ts_road_map, compute_ats_bounding_boxes
+from torchvision.models.detection.transform import GeneralizedRCNNTransform
+target_transform = GeneralizedRCNNTransform(
+        800, 800, [0., 0., 0.], [1., 1., 1.])
+
+def get_mask_ts(mask, target):
+    mask = nn.Sigmoid()(mask) > 0.5
+
+    temp_tensor = torch.zeros(1, 3, 400, 400)
+    temp_target = [{'masks': mask,
+                    'boxes': torch.tensor([[1., 1., 1., 1.]])}]
+    _, temp_target = target_transform(temp_tensor, temp_target)
+    predicted_road_map = temp_target[0]['masks'][0, :1]
+    
+    ts_road_map = compute_ts_road_map(predicted_road_map, target[0]['masks'])
+    return ts_road_map
+
+def get_detection_ts(detection, target):
+    detection = detection[0]
+    true_index = detection['scores'] > 0.
+    detection = detection['boxes'][true_index].cpu()
+
+    if len(detection) == 0:
+        return 0.
+
+    pred_detection = []
+    for i in range(len(detection)):
+        min_x = detection[i][0].item()
+        min_y = detection[i][1].item()
+        max_x = detection[i][2].item()
+        max_y = detection[i][3].item()
+
+        pred_box = torch.tensor([
+            [max_x, max_x, min_x, min_x],
+            [max_y, min_y, max_y, min_y]])
+        pred_detection.append(pred_box)
+
+    pred_detection = torch.stack(pred_detection).unsqueeze(0)
+    pred_detection[:, :, 0, :] = pred_detection[:, :, 0, :] * 2
+    pred_detection[:, :, 1, :] = pred_detection[:, :, 1, :] * 2
+
+    ats_bounding_boxes = compute_ats_bounding_boxes(pred_detection[0], target[0]['boxes'])
+    return ats_bounding_boxes
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -114,6 +159,11 @@ parser.add_argument(
     type=float,
     default=0.1,
     help='the default LR gamma')
+parser.add_argument(
+    '--depth_net_path',
+    type=str,
+    default='./_depth_net.pth',
+    help='path to depth net state dict')
 
 args = parser.parse_args()
 assert args.optimizer in ['sgd', 'adam']
@@ -135,12 +185,13 @@ def train(epoch):
     total_roi_box_reg_loss = 0.
     total_roi_cls_loss = 0.
     total_mask_loss = 0.
-    total_mask_ts_numerator = 0
-    total_mask_ts_denominator = 0
-    total_detection_ts_numerator = 0
-    total_detection_ts_denominator = 0
+    total_mask_ts = 0.
+    total_detection_ts = 0.
     batch_count = 0
     for batch_idx, data in enumerate(train_dataloader):
+        original_target = copy.deepcopy(data[1])
+        
+        # Filter targets
         dis = torch.mean(data[1][0]['boxes'], dim=2) - torch.tensor([400., 400.])
         index_1 = torch.sqrt(torch.sum(torch.pow(dis, 2), dim=1)) < 300.
         index_2 = (data[1][0]['labels'] == 0) | (data[1][0]['labels'] == 2) |\
@@ -166,9 +217,9 @@ def train(epoch):
         # evaluate
         with torch.no_grad():
             model.eval()
-            results = model(imgs, targets, return_result=True)
-            mask_ts, mask_ts_numerator, mask_ts_denominator = results[:3]
-            detection_ts, detection_ts_numerator, detection_ts_denominator = results[3:6]
+            masks, detections = model(imgs, targets, return_result=True)
+            mask_ts = get_mask_ts(masks.cpu(), original_target)
+            detection_ts = get_detection_ts(detections, original_target)            
 
             total_loss += loss.cpu().item()
             total_rpn_box_reg_loss += losses['loss_rpn_box_reg'].item()
@@ -176,10 +227,8 @@ def train(epoch):
             total_roi_box_reg_loss += losses['loss_box_reg'].item()
             total_roi_cls_loss += losses['loss_classifier'].item()
             total_mask_loss += losses['loss_mask'].item()
-            total_mask_ts_numerator += mask_ts_numerator
-            total_mask_ts_denominator += mask_ts_denominator
-            total_detection_ts_numerator += detection_ts_numerator
-            total_detection_ts_denominator += detection_ts_denominator
+            total_mask_ts += mask_ts
+            total_detection_ts += detection_ts
         model.train()
 
         # Log
@@ -199,16 +248,6 @@ def train(epoch):
             mask_ts, detection_ts))
         t = time.time()
 
-    try:
-        total_mask_ts = total_mask_ts_numerator / total_mask_ts_denominator
-    except ZeroDivisionError:
-        total_mask_ts = 0.
-
-    try:
-        total_detection_ts = total_detection_ts_numerator / total_detection_ts_denominator
-    except ZeroDivisionError:
-        total_detection_ts = 0.
-
     total_results = {
         'loss': total_loss / loader_len,
         'rpn_box_reg_loss': total_rpn_box_reg_loss / loader_len,
@@ -216,8 +255,8 @@ def train(epoch):
         'roi_box_reg_loss': total_roi_box_reg_loss / loader_len,
         'roi_cls_loss': total_roi_cls_loss / loader_len,
         'mask_loss': total_mask_loss / loader_len,
-        'mask_ts': total_mask_ts,
-        'detection_ts': total_detection_ts
+        'mask_ts': total_mask_ts / loader_len,
+        'detection_ts': total_detection_ts / loader_len
     }
     return total_results
 
@@ -234,11 +273,12 @@ def validate(epoch):
         total_roi_box_reg_loss = 0.
         total_roi_cls_loss = 0.
         total_mask_loss = 0.
-        total_mask_ts_numerator = 0
-        total_mask_ts_denominator = 0
-        total_detection_ts_numerator = 0
-        total_detection_ts_denominator = 0
+        total_mask_ts = 0.
+        total_detection_ts = 0.
         for batch_idx, data in enumerate(val_dataloader):
+            original_target = copy.deepcopy(data[1])
+            
+            # Filter targets
             dis = torch.mean(data[1][0]['boxes'], dim=2) - torch.tensor([400., 400.])
             index_1 = torch.sqrt(torch.sum(torch.pow(dis, 2), dim=1)) < 300.
             index_2 = (data[1][0]['labels'] == 0) | (data[1][0]['labels'] == 2) |\
@@ -251,9 +291,10 @@ def validate(epoch):
             targets = data[1]
             model.train()
             losses = model(imgs, targets)
-            results = model(imgs, targets, return_result=True)
-            mask_ts, mask_ts_numerator, mask_ts_denominator = results[:3]
-            detection_ts, detection_ts_numerator, detection_ts_denominator = results[3:6]
+            model.eval()
+            masks, detections = model(imgs, targets, return_result=True)
+            mask_ts = get_mask_ts(masks.cpu(), original_target)
+            detection_ts = get_detection_ts(detections, original_target)
 
             loss = sum(l for l in losses.values())
 
@@ -263,10 +304,8 @@ def validate(epoch):
             total_roi_box_reg_loss += losses['loss_box_reg'].item()
             total_roi_cls_loss += losses['loss_classifier'].item()
             total_mask_loss += losses['loss_mask'].item()
-            total_mask_ts_numerator += mask_ts_numerator
-            total_mask_ts_denominator += mask_ts_denominator
-            total_detection_ts_numerator += detection_ts_numerator
-            total_detection_ts_denominator += detection_ts_denominator
+            total_mask_ts += mask_ts
+            total_detection_ts += detection_ts
 
             # Log
             print(('Val Epoch {} {}/{} ({:.3f}s) | '
@@ -285,16 +324,6 @@ def validate(epoch):
             mask_ts, detection_ts))
             t = time.time()
 
-    try:
-        total_mask_ts = total_mask_ts_numerator / total_mask_ts_denominator
-    except ZeroDivisionError:
-        total_mask_ts = 0.
-
-    try:
-        total_detection_ts = total_detection_ts_numerator / total_detection_ts_denominator
-    except ZeroDivisionError:
-        total_detection_ts = 0.
-
     total_results = {
         'loss': total_loss / loader_len,
         'rpn_box_reg_loss': total_rpn_box_reg_loss / loader_len,
@@ -302,13 +331,12 @@ def validate(epoch):
         'roi_box_reg_loss': total_roi_box_reg_loss / loader_len,
         'roi_cls_loss': total_roi_cls_loss / loader_len,
         'mask_loss': total_mask_loss / loader_len,
-        'mask_ts': total_mask_ts,
-        'detection_ts': total_detection_ts
+        'mask_ts': total_mask_ts / loader_len,
+        'detection_ts': total_detection_ts / loader_len
     }
     return total_results
 
 if __name__ == '__main__':
-
     # Set up random seed
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -328,10 +356,11 @@ if __name__ == '__main__':
     # Set up model and loss function
     print("Creating model")
     model = get_model(args)
-    device_count = torch.cuda.device_count()
-    if device_count > 1:
-        model = nn.DataParallel(model)
+#     device_count = torch.cuda.device_count()
+#     if device_count > 1:
+#         model = nn.DataParallel(model)
     model = model.to(device)
+    # model.load_state_dict(torch.load('../test_v2/2020-05-09-05-41-04/epoch21.pth')['state_dict'])
 
     if args.resume_dir and not args.debug:
         # Load checkpoint
@@ -428,27 +457,27 @@ if __name__ == '__main__':
             scheduler.step()
 
         # Val
-        val_results = validate(epoch)
-        results['val_loss'].append(val_results['loss'])
-        results['val_rpn_box_reg_loss'].append(val_results['rpn_box_reg_loss'])
-        results['val_rpn_cls_loss'].append(val_results['rpn_cls_loss'])
-        results['val_roi_box_reg_loss'].append(val_results['roi_box_reg_loss'])
-        results['val_roi_cls_loss'].append(val_results['roi_cls_loss'])
-        results['val_mask_loss'].append(val_results['mask_loss'])
-        results['val_mask_ts'].append(val_results['mask_ts'])
-        results['val_detection_ts'].append(val_results['detection_ts'])
-        print(('\nTotal val loss: {:.3f} | '
-               'val rpn box regression loss: {:.3f} | '
-               'val rpn classifier loss: {:.3f} | '
-               'val roi box regression loss: {:.3f} | '
-               'val roi classifier loss: {:.3f} | '
-               'val mask loss: {:.3f} | '
-               'val mask ts: {:.3f} | '
-               'val detection ts: {:.3f}\n').format(
-            val_results['loss'], val_results['rpn_box_reg_loss'],
-            val_results['rpn_cls_loss'], val_results['roi_box_reg_loss'],
-            val_results['roi_cls_loss'], val_results['mask_loss'],
-            val_results['mask_ts'], val_results['detection_ts']))
+#         val_results = validate(epoch)
+#         results['val_loss'].append(val_results['loss'])
+#         results['val_rpn_box_reg_loss'].append(val_results['rpn_box_reg_loss'])
+#         results['val_rpn_cls_loss'].append(val_results['rpn_cls_loss'])
+#         results['val_roi_box_reg_loss'].append(val_results['roi_box_reg_loss'])
+#         results['val_roi_cls_loss'].append(val_results['roi_cls_loss'])
+#         results['val_mask_loss'].append(val_results['mask_loss'])
+#         results['val_mask_ts'].append(val_results['mask_ts'])
+#         results['val_detection_ts'].append(val_results['detection_ts'])
+#         print(('\nTotal val loss: {:.3f} | '
+#                'val rpn box regression loss: {:.3f} | '
+#                'val rpn classifier loss: {:.3f} | '
+#                'val roi box regression loss: {:.3f} | '
+#                'val roi classifier loss: {:.3f} | '
+#                'val mask loss: {:.3f} | '
+#                'val mask ts: {:.3f} | '
+#                'val detection ts: {:.3f}\n').format(
+#             val_results['loss'], val_results['rpn_box_reg_loss'],
+#             val_results['rpn_cls_loss'], val_results['roi_box_reg_loss'],
+#             val_results['roi_cls_loss'], val_results['mask_loss'],
+#             val_results['mask_ts'], val_results['detection_ts']))
 
         if not args.debug: # and last_val_loss > val_results['loss']:
             state = {

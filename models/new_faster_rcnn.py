@@ -104,23 +104,20 @@ class UnetMask(nn.Module):
 
 
 class GeneralizedRCNN(nn.Module):
-    def __init__(self, backbone, rpn, roi_heads, mask_net, transform, input_img_num=6, depth_estimator_model_path='_depth_net.pth'):
+    def __init__(self, backbone, rpn, roi_heads, mask_net, transform, input_img_num=6, depth_estimator_path='_depth_net.pth'):
         super(GeneralizedRCNN, self).__init__()
         self.transform = transform
-        # self.backbone_list = nn.ModuleList([b for b in backbone_list])
-        # self.backbone_num = len(backbone_list)
-        self.backbone = UNet(4, 1) # backbone
+        self.backbone = UNet(4, 1)
         self.backbone_ = UNet(4, 64)
-        # self.backbone_ = resnet_fpn_backbone('resnet18', False)
         self.input_img_num = input_img_num
         self.rpn = rpn
         self.roi_heads = roi_heads
-        self.mask_net = UnetMask(6, 1) # mask_net
-        self.backbone_out_channels = 64 # backbone.out_channels # backbone_list[0].out_channels
+        self.mask_net = UnetMask(6, 1)
+        self.backbone_out_channels = 64
 
-        self.depth_estimator_model_path = depth_estimator_model_path
+        self.depth_estimator_path = depth_estimator_path
         self.depth_estimator = VggDepthEstimator()
-        self.depth_estimator.load_state_dict(torch.load(self.depth_estimator_model_path))
+        self.depth_estimator.load_state_dict(torch.load(self.depth_estimator_path))
         self.depth_resize = nn.Upsample(size=(400, 400), mode='bilinear', align_corners=True)
 
         self.img_transform = transforms.Compose([
@@ -146,7 +143,6 @@ class GeneralizedRCNN(nn.Module):
         ])
 
     def forward(self, _images, _targets=None, return_result=False, return_losses=False):
-        # assert images.size(1) == self.backbone_num
         bs = _images.size(0)
         assert bs == 1
 
@@ -213,7 +209,7 @@ class GeneralizedRCNN(nn.Module):
 
         masks, mask_losses = self.mask_net(combined_feature_map, target_masks)
 
-        del features_list # , combined_feature_map
+        del features_list
         torch.cuda.empty_cache()
 
         # Detction backbone
@@ -230,7 +226,6 @@ class GeneralizedRCNN(nn.Module):
         detection_features = OrderedDict([('0', detection_combined_feature_map)])
 
         proposals, proposal_losses = self.rpn(images, road_map_features, targets)
-        # proposals, proposal_losses = self.rpn(images, detection_features, targets)
         # try:
         #     detections, detector_losses = self.roi_heads(detection_features, proposals, images.image_sizes, targets)
         #     detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
@@ -248,49 +243,8 @@ class GeneralizedRCNN(nn.Module):
         losses.update(proposal_losses)
         losses.update(mask_losses)
 
-#         mask_ts = 0.
-#         mask_ts_numerator = 0
-#         mask_ts_denominator = 1
-#         detection_ts = 0.
-#         detection_ts_numerator = 0
-#         detection_ts_denominator = 1
-
         if return_result:
-            with torch.no_grad():
-                # Get mask threat score
-                _masks = self.mask_transform(masks.cpu().squeeze(0)).unsqueeze(0)
-                mask_ts, mask_ts_numerator, mask_ts_denominator = get_mask_threat_score(
-                    # masks.cpu(), target_masks.cpu())
-                    _masks, _targets[0]['masks'].float())
-
-                # Get object detection threat score
-                detection_ts_numerator = 0
-                detection_ts_denominator = 0
-                if detections is not None:
-                    for i in range(len(detections)):
-                        if len(detections[i]['boxes']) == 0:
-                            continue
-                        min_coordinates, _ = torch.min(_targets[0]['boxes'], 2)
-                        max_coordinates, _ = torch.max(_targets[0]['boxes'], 2)
-                        _targets[0]['boxes'] = torch.cat([min_coordinates, max_coordinates], 1)
-                        _detection = detections[i]['boxes'].cpu().view(-1, 2, 2) * 2
-                        _, d_ts_n, d_ts_d = compute_ats_bounding_boxes(
-                            # detections[i]['boxes'].cpu().view(-1, 2, 2),
-                            _detection,
-                            _targets[i]['boxes'].cpu().view(-1, 2, 2))
-                        detection_ts_numerator += d_ts_n
-                        detection_ts_denominator += d_ts_d
-                    try:
-                        detection_ts = detection_ts_numerator / detection_ts_denominator
-                    except ZeroDivisionError:
-                        detection_ts = 0.
-                else:
-                    detection_ts = 0.
-    #             detection_ts, detection_ts_numerator, detection_ts_denominator =\
-    #                 get_detection_threat_score(cpu_detections, targets, 0.5)
-            return mask_ts, mask_ts_numerator,\
-                   mask_ts_denominator, detection_ts, detection_ts_numerator,\
-                   detection_ts_denominator, detections, masks,
+            return masks, detections
         else:
             return losses
 
@@ -311,7 +265,7 @@ class ModifiedFasterRCNN(GeneralizedRCNN):
                  box_score_thresh=0.05, box_nms_thresh=0.1, box_detections_per_img=100,
                  box_fg_iou_thresh=0.5, box_bg_iou_thresh=0.5,
                  box_batch_size_per_image=512, box_positive_fraction=0.25,
-                 bbox_reg_weights=None):
+                 bbox_reg_weights=None, depth_estimator_path='_depth_net.pth'):
 
 #         if not hasattr(backbone, "out_channels"):
 #             raise ValueError(
@@ -390,7 +344,7 @@ class ModifiedFasterRCNN(GeneralizedRCNN):
             image_std = [0.229, 0.224, 0.225]
         transform = GeneralizedRCNNTransform(min_size, max_size, image_mean, image_std)
 
-        super(ModifiedFasterRCNN, self).__init__(backbone, rpn, roi_heads, mask_net, transform)
+        super(ModifiedFasterRCNN, self).__init__(backbone, rpn, roi_heads, mask_net, transform, depth_estimator_path=depth_estimator_path)
 
 
 class TwoMLPHead(nn.Module):
